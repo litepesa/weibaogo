@@ -1,45 +1,97 @@
-// config/config.go
+// internal/config/config.go
 package config
 
 import (
-	"log"
 	"os"
-
-	"github.com/joho/godotenv"
+	"strings"
 )
 
-type Config struct {
-	// Database
-	DBHost     string
-	DBPort     string
-	DBUser     string
-	DBPassword string
-	DBName     string
-
-	// R2 Storage
-	R2AccountID  string
-	R2AccessKey  string
-	R2SecretKey  string
-	R2BucketName string
-	R2Endpoint   string
+// R2Config holds Cloudflare R2 configuration
+type R2Config struct {
+	AccountID  string
+	AccessKey  string
+	SecretKey  string
+	BucketName string
+	PublicURL  string
 }
 
-func Load() *Config {
-	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found")
+// Config holds all application configuration
+type Config struct {
+	// Server configuration
+	Environment string
+	Port        string
+
+	// Database configuration
+	DatabaseURL string
+
+	// Firebase configuration
+	FirebaseProjectID string
+
+	// R2 Storage configuration
+	R2Config R2Config
+
+	// CORS configuration
+	AllowedOrigins []string
+}
+
+// Load loads configuration from environment variables
+func Load() (*Config, error) {
+	config := &Config{
+		Environment:       getEnv("GIN_MODE", "debug"),
+		Port:              getEnv("PORT", "8080"),
+		DatabaseURL:       getEnv("DATABASE_URL", ""),
+		FirebaseProjectID: getEnv("FIREBASE_PROJECT_ID", ""),
+		R2Config: R2Config{
+			AccountID:  getEnv("R2_ACCOUNT_ID", ""),
+			AccessKey:  getEnv("R2_ACCESS_KEY", ""),
+			SecretKey:  getEnv("R2_SECRET_KEY", ""),
+			BucketName: getEnv("R2_BUCKET_NAME", "weibao-media"),
+		},
 	}
 
-	return &Config{
-		DBHost:     os.Getenv("DB_HOST"),
-		DBPort:     os.Getenv("DB_PORT"),
-		DBUser:     os.Getenv("DB_USER"),
-		DBPassword: os.Getenv("DB_PASSWORD"),
-		DBName:     os.Getenv("DB_NAME"),
-
-		R2AccountID:  os.Getenv("R2_ACCOUNT_ID"),
-		R2AccessKey:  os.Getenv("R2_ACCESS_KEY_ID"),
-		R2SecretKey:  os.Getenv("R2_SECRET_ACCESS_KEY"),
-		R2BucketName: os.Getenv("R2_BUCKET_NAME"),
-		R2Endpoint:   os.Getenv("R2_ENDPOINT"),
+	// Set public URL for R2
+	if config.R2Config.AccountID != "" {
+		config.R2Config.PublicURL = "https://" + config.R2Config.BucketName + "." + config.R2Config.AccountID + ".r2.cloudflarestorage.com"
 	}
+
+	// Parse allowed origins
+	originsStr := getEnv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")
+	config.AllowedOrigins = strings.Split(originsStr, ",")
+	for i, origin := range config.AllowedOrigins {
+		config.AllowedOrigins[i] = strings.TrimSpace(origin)
+	}
+
+	// Validate required configuration
+	if config.DatabaseURL == "" {
+		return nil, ErrMissingDatabaseURL
+	}
+
+	if config.R2Config.AccountID == "" || config.R2Config.AccessKey == "" || config.R2Config.SecretKey == "" {
+		return nil, ErrMissingR2Config
+	}
+
+	return config, nil
+}
+
+// getEnv gets an environment variable with a default value
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+// Configuration errors
+var (
+	ErrMissingDatabaseURL = ConfigError{Message: "DATABASE_URL environment variable is required"}
+	ErrMissingR2Config    = ConfigError{Message: "R2 configuration (R2_ACCOUNT_ID, R2_ACCESS_KEY, R2_SECRET_KEY) is required"}
+)
+
+// ConfigError represents a configuration error
+type ConfigError struct {
+	Message string
+}
+
+func (e ConfigError) Error() string {
+	return e.Message
 }
