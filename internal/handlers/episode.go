@@ -1,5 +1,5 @@
 // ===============================
-// internal/handlers/episode.go - Complete Implementation
+// internal/handlers/episode.go - Complete Fixed Implementation
 // ===============================
 
 package handlers

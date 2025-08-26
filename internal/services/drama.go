@@ -22,6 +22,13 @@ type DramaService struct {
 	r2Client *storage.R2Client
 }
 
+func (s *DramaService) ReorderEpisodes(context context.Context, dramaID string, order []struct {
+	EpisodeID     string "json:\"episodeId\" binding:\"required\""
+	EpisodeNumber int    "json:\"episodeNumber\" binding:\"required,min=1\""
+}) any {
+	panic("unimplemented")
+}
+
 func (s *DramaService) GetDramaEpisodeStats(context context.Context, dramaID string) (any, any) {
 	panic("unimplemented")
 }

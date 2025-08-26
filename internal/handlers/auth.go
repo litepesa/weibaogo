@@ -1,5 +1,5 @@
 // ===============================
-// internal/handlers/auth.go - Authentication Handler
+// internal/handlers/auth.go - Fixed Authentication Handler
 // ===============================
 
 package handlers
@@ -13,6 +13,7 @@ import (
 	"weibaobe/internal/database"
 	"weibaobe/internal/models"
 
+	firebase "firebase.google.com/go/v4"
 	"firebase.google.com/go/v4/auth"
 	"github.com/gin-gonic/gin"
 	"google.golang.org/api/option"
@@ -26,7 +27,7 @@ func NewAuthHandler(cfg *config.Config) (*AuthHandler, error) {
 	// Initialize Firebase Admin SDK
 	opt := option.WithCredentialsFile(cfg.FirebaseCredentials)
 
-	firebaseApp, err := app.NewApp(context.Background(), &app.Config{
+	firebaseApp, err := firebase.NewApp(context.Background(), &firebase.Config{
 		ProjectID: cfg.FirebaseProjectID,
 	}, opt)
 	if err != nil {
