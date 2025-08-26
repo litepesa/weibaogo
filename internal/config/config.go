@@ -10,6 +10,22 @@ import (
 	"strings"
 )
 
+// DatabaseConfig holds database connection configuration
+type DatabaseConfig struct {
+	Host     string
+	Port     string
+	User     string
+	Password string
+	Name     string
+	SSLMode  string
+}
+
+// ConnectionString generates a PostgreSQL connection string from the database config
+func (db DatabaseConfig) ConnectionString() string {
+	return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+		db.Host, db.Port, db.User, db.Password, db.Name, db.SSLMode)
+}
+
 // R2Config holds Cloudflare R2 configuration
 type R2Config struct {
 	AccountID  string
@@ -26,7 +42,7 @@ type Config struct {
 	Port        string
 
 	// Database configuration
-	DatabaseURL string
+	Database DatabaseConfig
 
 	// Firebase configuration
 	FirebaseProjectID   string
@@ -47,10 +63,17 @@ func Load() (*Config, error) {
 	config := &Config{
 		Environment:         getEnv("GIN_MODE", "debug"),
 		Port:                getEnv("PORT", "8080"),
-		DatabaseURL:         getEnv("DATABASE_URL", ""),
 		FirebaseProjectID:   getEnv("FIREBASE_PROJECT_ID", ""),
 		FirebaseCredentials: getEnv("FIREBASE_CREDENTIALS", ""),
 		JWTSecret:           getEnv("JWT_SECRET", "your-secret-key"),
+		Database: DatabaseConfig{
+			Host:     getEnv("DB_HOST", ""),
+			Port:     getEnv("DB_PORT", "25060"),
+			User:     getEnv("DB_USER", "doadmin"),
+			Password: getEnv("DB_PASSWORD", ""),
+			Name:     getEnv("DB_NAME", "defaultdb"),
+			SSLMode:  getEnv("DB_SSLMODE", "require"),
+		},
 		R2Config: R2Config{
 			AccountID:  getEnv("R2_ACCOUNT_ID", ""),
 			AccessKey:  getEnv("R2_ACCESS_KEY", ""),
@@ -73,8 +96,9 @@ func Load() (*Config, error) {
 	}
 
 	// Validate required configuration
-	if config.DatabaseURL == "" {
-		return nil, ErrMissingDatabaseURL
+	if config.Database.Host == "" || config.Database.User == "" ||
+		config.Database.Password == "" || config.Database.Name == "" {
+		return nil, ErrMissingDatabaseConfig
 	}
 
 	if config.R2Config.AccountID == "" || config.R2Config.AccessKey == "" || config.R2Config.SecretKey == "" {
@@ -98,7 +122,7 @@ func getEnv(key, defaultValue string) string {
 
 // Configuration errors
 var (
-	ErrMissingDatabaseURL    = ConfigError{Message: "DATABASE_URL environment variable is required"}
+	ErrMissingDatabaseConfig = ConfigError{Message: "Database configuration (DB_HOST, DB_USER, DB_PASSWORD, DB_NAME) is required"}
 	ErrMissingR2Config       = ConfigError{Message: "R2 configuration (R2_ACCOUNT_ID, R2_ACCESS_KEY, R2_SECRET_KEY) is required"}
 	ErrMissingFirebaseConfig = ConfigError{Message: "FIREBASE_PROJECT_ID is required"}
 )

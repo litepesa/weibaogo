@@ -34,8 +34,8 @@ func main() {
 	// Set Gin mode
 	gin.SetMode(cfg.Environment)
 
-	// Initialize database
-	db, err := database.Connect(cfg.DatabaseURL)
+	// Initialize database with new config structure
+	db, err := database.Connect(cfg.Database.ConnectionString())
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
 	}
@@ -92,7 +92,7 @@ func main() {
 	port := cfg.Port
 	log.Printf("🚀 Server starting on port %s", port)
 	log.Printf("🌐 Environment: %s", cfg.Environment)
-	log.Printf("💾 Database connected successfully")
+	log.Printf("💾 Database connected to %s:%s", cfg.Database.Host, cfg.Database.Port)
 	log.Printf("☁️  R2 storage initialized")
 
 	log.Fatal(router.Run(":" + port))
