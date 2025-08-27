@@ -1,5 +1,5 @@
 // ===============================
-// internal/handlers/auth.go - Fixed Authentication Handler
+// internal/handlers/auth.go - Minimal Update (Only Remove CoinsBalance)
 // ===============================
 
 package handlers
@@ -147,13 +147,13 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 	if err != nil {
 		// User doesn't exist, create new user
 		newUser := models.User{
-			UID:            userID,
-			Name:           firebaseUser.DisplayName,
-			Email:          firebaseUser.Email,
-			PhoneNumber:    firebaseUser.PhoneNumber,
-			ProfileImage:   firebaseUser.PhotoURL,
-			UserType:       "viewer", // Default to viewer
-			CoinsBalance:   0,
+			UID:          userID,
+			Name:         firebaseUser.DisplayName,
+			Email:        firebaseUser.Email,
+			PhoneNumber:  firebaseUser.PhoneNumber,
+			ProfileImage: firebaseUser.PhotoURL,
+			UserType:     "viewer", // Default to viewer
+			// REMOVED: CoinsBalance:   0,
 			FavoriteDramas: make(models.StringSlice, 0),
 			WatchHistory:   make(models.StringSlice, 0),
 			DramaProgress:  make(models.IntMap),
@@ -168,12 +168,13 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 			LastSeen:  time.Now(),
 		}
 
+		// UPDATED: Removed coins_balance from INSERT query
 		query := `
 			INSERT INTO users (uid, name, email, phone_number, profile_image, bio, user_type, 
-			                   coins_balance, favorite_dramas, watch_history, drama_progress, 
+			                   favorite_dramas, watch_history, drama_progress, 
 			                   unlocked_dramas, preferences, created_at, updated_at, last_seen)
 			VALUES (:uid, :name, :email, :phone_number, :profile_image, :bio, :user_type, 
-			        :coins_balance, :favorite_dramas, :watch_history, :drama_progress, 
+			        :favorite_dramas, :watch_history, :drama_progress, 
 			        :unlocked_dramas, :preferences, :created_at, :updated_at, :last_seen)`
 
 		_, err = db.NamedExec(query, newUser)

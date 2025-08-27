@@ -1,5 +1,5 @@
 // ===============================
-// internal/services/wallet.go
+// internal/services/wallet.go - Minimal Update (Only Remove User Table Updates)
 // ===============================
 
 package services
@@ -100,24 +100,24 @@ func (s *WalletService) AddCoins(ctx context.Context, userID string, coinAmount 
 	}
 	defer tx.Rollback()
 
-	// Get current balance
+	// UPDATED: Get current balance from wallets table only (not users table)
 	var currentBalance int
-	err = tx.QueryRowContext(ctx, "SELECT coins_balance FROM users WHERE uid = $1", userID).Scan(&currentBalance)
+	err = tx.QueryRowContext(ctx, "SELECT coins_balance FROM wallets WHERE user_id = $1", userID).Scan(&currentBalance)
 	if err != nil {
 		return 0, err
 	}
 
 	newBalance := currentBalance + coinAmount
 
-	// Update user balance
-	_, err = tx.ExecContext(ctx,
-		"UPDATE users SET coins_balance = $1, updated_at = $2 WHERE uid = $3",
-		newBalance, time.Now(), userID)
-	if err != nil {
-		return 0, err
-	}
+	// REMOVED: Update user balance
+	// _, err = tx.ExecContext(ctx,
+	// 	"UPDATE users SET coins_balance = $1, updated_at = $2 WHERE uid = $3",
+	// 	newBalance, time.Now(), userID)
+	// if err != nil {
+	// 	return 0, err
+	// }
 
-	// Update wallet
+	// Update wallet only (single source of truth)
 	_, err = tx.ExecContext(ctx,
 		"UPDATE wallets SET coins_balance = $1, updated_at = $2 WHERE user_id = $3",
 		newBalance, time.Now(), userID)

@@ -79,13 +79,8 @@ func Load() (*Config, error) {
 			AccessKey:  getEnv("R2_ACCESS_KEY", ""),
 			SecretKey:  getEnv("R2_SECRET_KEY", ""),
 			BucketName: getEnv("R2_BUCKET_NAME", "weibaomedia"),
+			PublicURL:  getEnv("R2_PUBLIC_URL", "https://pub-5e8ab62547db4f58851382161d280c19.r2.dev"),
 		},
-	}
-
-	// Set public URL for R2
-	if config.R2Config.AccountID != "" && config.R2Config.BucketName != "" {
-		config.R2Config.PublicURL = fmt.Sprintf("https://%s.%s.r2.cloudflarestorage.com",
-			config.R2Config.BucketName, config.R2Config.AccountID)
 	}
 
 	// Parse allowed origins

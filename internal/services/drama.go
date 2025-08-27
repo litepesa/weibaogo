@@ -482,7 +482,7 @@ func (s *DramaService) SearchEpisodes(ctx context.Context, query, dramaID string
 }
 
 // ===============================
-// DRAMA UNLOCK OPERATION
+// DRAMA UNLOCK OPERATION - UPDATED
 // ===============================
 
 func (s *DramaService) UnlockDrama(ctx context.Context, userID, dramaID string) (bool, int, error) {
@@ -492,18 +492,26 @@ func (s *DramaService) UnlockDrama(ctx context.Context, userID, dramaID string) 
 	}
 	defer tx.Rollback()
 
-	// Get user and check current balance and unlocked dramas
+	// UPDATED: Get user unlocked dramas from users table and balance from wallet
 	var user models.User
-	query := `SELECT coins_balance, unlocked_dramas FROM users WHERE uid = $1`
+	query := `SELECT unlocked_dramas FROM users WHERE uid = $1`
 	err = tx.GetContext(ctx, &user, query, userID)
 	if err != nil {
 		return false, 0, errors.New("user_not_found")
 	}
 
+	// UPDATED: Get current balance from wallet table
+	var currentBalance int
+	query = `SELECT coins_balance FROM wallets WHERE user_id = $1`
+	err = tx.QueryRowContext(ctx, query, userID).Scan(&currentBalance)
+	if err != nil {
+		return false, 0, errors.New("wallet_not_found")
+	}
+
 	// Check if drama already unlocked
 	for _, id := range user.UnlockedDramas {
 		if id == dramaID {
-			return false, user.CoinsBalance, errors.New("already_unlocked")
+			return false, currentBalance, errors.New("already_unlocked")
 		}
 	}
 
@@ -517,29 +525,29 @@ func (s *DramaService) UnlockDrama(ctx context.Context, userID, dramaID string) 
 
 	// Check if drama is premium
 	if !drama.IsPremium {
-		return false, user.CoinsBalance, errors.New("drama_free")
+		return false, currentBalance, errors.New("drama_free")
 	}
 
 	// Check sufficient balance
 	unlockCost := models.DramaUnlockCost
-	if user.CoinsBalance < unlockCost {
-		return false, user.CoinsBalance, errors.New("insufficient_funds")
+	if currentBalance < unlockCost {
+		return false, currentBalance, errors.New("insufficient_funds")
 	}
 
-	// Update user balance and unlocked dramas
+	// Update user unlocked dramas (only this field)
 	newUnlocked := append(user.UnlockedDramas, dramaID)
-	newBalance := user.CoinsBalance - unlockCost
+	newBalance := currentBalance - unlockCost
 
 	query = `
 		UPDATE users 
-		SET coins_balance = $1, unlocked_dramas = $2, updated_at = $3 
-		WHERE uid = $4`
-	_, err = tx.ExecContext(ctx, query, newBalance, models.StringSlice(newUnlocked), time.Now(), userID)
+		SET unlocked_dramas = $1, updated_at = $2 
+		WHERE uid = $3`
+	_, err = tx.ExecContext(ctx, query, models.StringSlice(newUnlocked), time.Now(), userID)
 	if err != nil {
 		return false, 0, err
 	}
 
-	// Update wallet
+	// UPDATED: Update wallet balance (single source of truth)
 	query = `
 		UPDATE wallets 
 		SET coins_balance = $1, updated_at = $2 
@@ -563,7 +571,7 @@ func (s *DramaService) UnlockDrama(ctx context.Context, userID, dramaID string) 
 		UserID:        userID,
 		Type:          "drama_unlock",
 		CoinAmount:    unlockCost,
-		BalanceBefore: user.CoinsBalance,
+		BalanceBefore: currentBalance,
 		BalanceAfter:  newBalance,
 		Description:   fmt.Sprintf("Unlocked: %s", drama.Title),
 		ReferenceID:   &dramaID,

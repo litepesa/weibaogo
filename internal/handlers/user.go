@@ -1,5 +1,5 @@
 // ===============================
-// internal/handlers/user.go - User Management Handler
+// internal/handlers/user.go - Minimal Update (Only Remove Balance from Queries)
 // ===============================
 
 package handlers
@@ -51,12 +51,13 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 		user.UnlockedDramas = make(models.StringSlice, 0)
 	}
 
+	// UPDATED: Removed coins_balance from INSERT query
 	query := `
 		INSERT INTO users (uid, name, email, phone_number, profile_image, bio, user_type, 
-		                   coins_balance, favorite_dramas, watch_history, drama_progress, 
+		                   favorite_dramas, watch_history, drama_progress, 
 		                   unlocked_dramas, preferences, created_at, updated_at, last_seen)
 		VALUES (:uid, :name, :email, :phone_number, :profile_image, :bio, :user_type, 
-		        :coins_balance, :favorite_dramas, :watch_history, :drama_progress, 
+		        :favorite_dramas, :watch_history, :drama_progress, 
 		        :unlocked_dramas, :preferences, :created_at, :updated_at, :last_seen)
 		ON CONFLICT (uid) DO UPDATE SET
 		name = EXCLUDED.name,
@@ -126,6 +127,7 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 	user.UpdatedAt = time.Now()
 	user.LastSeen = time.Now()
 
+	// UPDATED: Removed coins_balance from UPDATE query
 	query := `
 		UPDATE users SET 
 			name = :name, 

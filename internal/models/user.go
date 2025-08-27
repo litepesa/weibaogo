@@ -1,5 +1,5 @@
 // ===============================
-// internal/models/user.go
+// internal/models/user.go - Minimal Update (Only Remove CoinsBalance)
 // ===============================
 
 package models
@@ -11,14 +11,14 @@ import (
 )
 
 type User struct {
-	UID            string          `json:"uid" db:"uid"`
-	Name           string          `json:"name" db:"name"`
-	Email          string          `json:"email" db:"email"`
-	PhoneNumber    string          `json:"phoneNumber" db:"phone_number"`
-	ProfileImage   string          `json:"profileImage" db:"profile_image"`
-	Bio            string          `json:"bio" db:"bio"`
-	UserType       string          `json:"userType" db:"user_type"`
-	CoinsBalance   int             `json:"coinsBalance" db:"coins_balance"`
+	UID          string `json:"uid" db:"uid"`
+	Name         string `json:"name" db:"name"`
+	Email        string `json:"email" db:"email"`
+	PhoneNumber  string `json:"phoneNumber" db:"phone_number"`
+	ProfileImage string `json:"profileImage" db:"profile_image"`
+	Bio          string `json:"bio" db:"bio"`
+	UserType     string `json:"userType" db:"user_type"`
+	// REMOVED: CoinsBalance   int             `json:"coinsBalance" db:"coins_balance"`
 	FavoriteDramas StringSlice     `json:"favoriteDramas" db:"favorite_dramas"`
 	WatchHistory   StringSlice     `json:"watchHistory" db:"watch_history"`
 	DramaProgress  IntMap          `json:"dramaProgress" db:"drama_progress"`
@@ -103,6 +103,6 @@ func (u *User) GetDramaProgress(dramaID string) int {
 	return u.DramaProgress[dramaID]
 }
 
-func (u *User) CanAfford(amount int) bool {
-	return u.CoinsBalance >= amount
-}
+// REMOVED: func (u *User) CanAfford(amount int) bool {
+// 	return u.CoinsBalance >= amount
+// }
