@@ -64,6 +64,8 @@ func getContentType(fileType, ext string) string {
 		return "video/quicktime"
 	case ".avi":
 		return "video/avi"
+	case ".ts":
+		return "video/ts"
 	case ".webm":
 		return "video/webm"
 	default:

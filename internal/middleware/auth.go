@@ -1,22 +1,22 @@
 // ===============================
-// internal/middleware/auth.go - Firebase Auth Middleware
+// internal/middleware/auth.go - Updated Firebase Auth Middleware
 // ===============================
 
 package middleware
 
 import (
-	"context"
 	"net/http"
 	"strings"
 
 	"weibaobe/internal/database"
 	"weibaobe/internal/models"
+	"weibaobe/internal/services"
 
-	"firebase.google.com/go/v4/auth"
 	"github.com/gin-gonic/gin"
 )
 
-func FirebaseAuth() gin.HandlerFunc {
+// FirebaseAuth creates a middleware that verifies Firebase tokens
+func FirebaseAuth(firebaseService *services.FirebaseService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -35,8 +35,8 @@ func FirebaseAuth() gin.HandlerFunc {
 
 		token := tokenParts[1]
 
-		// Verify Firebase token
-		firebaseToken, err := verifyFirebaseToken(c.Request.Context(), token)
+		// Verify Firebase token using the service
+		firebaseToken, err := firebaseService.VerifyIDToken(c.Request.Context(), token)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
 			c.Abort()
@@ -50,6 +50,7 @@ func FirebaseAuth() gin.HandlerFunc {
 	}
 }
 
+// AdminOnly middleware that requires admin privileges
 func AdminOnly() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString("userID")
@@ -77,19 +78,4 @@ func AdminOnly() gin.HandlerFunc {
 
 		c.Next()
 	}
-}
-
-// You'll need to implement this with Firebase Admin SDK
-func verifyFirebaseToken(ctx context.Context, idToken string) (*auth.Token, error) {
-	// Initialize Firebase Admin SDK here
-	// This is a placeholder - implement with proper Firebase Admin SDK
-	// Example:
-	// client, err := app.Auth(ctx)
-	// if err != nil {
-	//     return nil, err
-	// }
-	// return client.VerifyIDToken(ctx, idToken)
-
-	// Placeholder implementation
-	return &auth.Token{UID: "placeholder"}, nil
 }

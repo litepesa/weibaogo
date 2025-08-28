@@ -1,47 +1,28 @@
 // ===============================
-// internal/handlers/auth.go - Minimal Update (Only Remove CoinsBalance)
+// internal/handlers/auth.go - Updated to Use Firebase Service
 // ===============================
 
 package handlers
 
 import (
-	"context"
 	"net/http"
 	"time"
 
-	"weibaobe/internal/config"
 	"weibaobe/internal/database"
 	"weibaobe/internal/models"
+	"weibaobe/internal/services"
 
-	firebase "firebase.google.com/go/v4"
-	"firebase.google.com/go/v4/auth"
 	"github.com/gin-gonic/gin"
-	"google.golang.org/api/option"
 )
 
 type AuthHandler struct {
-	firebaseAuth *auth.Client
+	firebaseService *services.FirebaseService
 }
 
-func NewAuthHandler(cfg *config.Config) (*AuthHandler, error) {
-	// Initialize Firebase Admin SDK
-	opt := option.WithCredentialsFile(cfg.FirebaseCredentials)
-
-	firebaseApp, err := firebase.NewApp(context.Background(), &firebase.Config{
-		ProjectID: cfg.FirebaseProjectID,
-	}, opt)
-	if err != nil {
-		return nil, err
-	}
-
-	authClient, err := firebaseApp.Auth(context.Background())
-	if err != nil {
-		return nil, err
-	}
-
+func NewAuthHandler(firebaseService *services.FirebaseService) *AuthHandler {
 	return &AuthHandler{
-		firebaseAuth: authClient,
-	}, nil
+		firebaseService: firebaseService,
+	}
 }
 
 // Verify Firebase token and return token claims
@@ -62,8 +43,8 @@ func (h *AuthHandler) VerifyToken(c *gin.Context) {
 
 	idToken := authHeader[7:]
 
-	// Verify the token with Firebase
-	token, err := h.firebaseAuth.VerifyIDToken(c.Request.Context(), idToken)
+	// Verify the token with Firebase using the service
+	token, err := h.firebaseService.VerifyIDToken(c.Request.Context(), idToken)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
 		c.Abort()
@@ -132,8 +113,8 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 		return
 	}
 
-	// Get Firebase user record
-	firebaseUser, err := h.firebaseAuth.GetUser(c.Request.Context(), userID)
+	// Get Firebase user record using the service
+	firebaseUser, err := h.firebaseService.GetUser(c.Request.Context(), userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get Firebase user"})
 		return
@@ -147,13 +128,12 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 	if err != nil {
 		// User doesn't exist, create new user
 		newUser := models.User{
-			UID:          userID,
-			Name:         firebaseUser.DisplayName,
-			Email:        firebaseUser.Email,
-			PhoneNumber:  firebaseUser.PhoneNumber,
-			ProfileImage: firebaseUser.PhotoURL,
-			UserType:     "viewer", // Default to viewer
-			// REMOVED: CoinsBalance:   0,
+			UID:            userID,
+			Name:           firebaseUser.DisplayName,
+			Email:          firebaseUser.Email,
+			PhoneNumber:    firebaseUser.PhoneNumber,
+			ProfileImage:   firebaseUser.PhotoURL,
+			UserType:       "viewer", // Default to viewer
 			FavoriteDramas: make(models.StringSlice, 0),
 			WatchHistory:   make(models.StringSlice, 0),
 			DramaProgress:  make(models.IntMap),
@@ -168,7 +148,6 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 			LastSeen:  time.Now(),
 		}
 
-		// UPDATED: Removed coins_balance from INSERT query
 		query := `
 			INSERT INTO users (uid, name, email, phone_number, profile_image, bio, user_type, 
 			                   favorite_dramas, watch_history, drama_progress, 

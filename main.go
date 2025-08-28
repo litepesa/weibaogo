@@ -1,5 +1,5 @@
 // ===============================
-// main.go - Updated Entry Point
+// main.go - Updated Entry Point with Firebase
 // ===============================
 
 package main
@@ -46,6 +46,12 @@ func main() {
 		log.Fatal("Failed to run migrations:", err)
 	}
 
+	// Initialize Firebase service (ADDED)
+	firebaseService, err := services.NewFirebaseService(cfg)
+	if err != nil {
+		log.Fatal("Failed to initialize Firebase service:", err)
+	}
+
 	// Initialize R2 storage
 	r2Client, err := storage.NewR2Client(cfg.R2Config)
 	if err != nil {
@@ -57,7 +63,8 @@ func main() {
 	walletService := services.NewWalletService(db)
 	uploadService := services.NewUploadService(r2Client)
 
-	// Initialize handlers
+	// Initialize handlers (UPDATED to include Firebase service)
+	authHandler := handlers.NewAuthHandler(firebaseService)
 	userHandler := handlers.NewUserHandler(db)
 	dramaHandler := handlers.NewDramaHandler(dramaService)
 	episodeHandler := handlers.NewEpisodeHandler(dramaService)
@@ -85,14 +92,15 @@ func main() {
 		})
 	})
 
-	// API routes
-	setupRoutes(router, userHandler, dramaHandler, episodeHandler, walletHandler, uploadHandler)
+	// API routes (UPDATED to pass Firebase service and auth handler)
+	setupRoutes(router, firebaseService, authHandler, userHandler, dramaHandler, episodeHandler, walletHandler, uploadHandler)
 
 	// Start server
 	port := cfg.Port
 	log.Printf("🚀 Server starting on port %s", port)
 	log.Printf("🌐 Environment: %s", cfg.Environment)
 	log.Printf("💾 Database connected to %s:%s", cfg.Database.Host, cfg.Database.Port)
+	log.Printf("🔥 Firebase service initialized")
 	log.Printf("☁️  R2 storage initialized")
 
 	log.Fatal(router.Run(":" + port))
@@ -100,6 +108,8 @@ func main() {
 
 func setupRoutes(
 	router *gin.Engine,
+	firebaseService *services.FirebaseService, // ADDED
+	authHandler *handlers.AuthHandler, // ADDED
 	userHandler *handlers.UserHandler,
 	dramaHandler *handlers.DramaHandler,
 	episodeHandler *handlers.EpisodeHandler,
@@ -107,6 +117,14 @@ func setupRoutes(
 	uploadHandler *handlers.UploadHandler,
 ) {
 	api := router.Group("/api/v1")
+
+	// Auth routes (ADDED - public auth endpoints)
+	auth := api.Group("/auth")
+	{
+		auth.POST("/verify", authHandler.VerifyToken)
+		auth.POST("/sync", middleware.FirebaseAuth(firebaseService), authHandler.SyncUser)
+		auth.GET("/user", middleware.FirebaseAuth(firebaseService), authHandler.GetCurrentUser)
+	}
 
 	// Public routes (no auth required)
 	public := api.Group("")
@@ -121,9 +139,9 @@ func setupRoutes(
 		public.GET("/episodes/:episodeId", episodeHandler.GetEpisode)
 	}
 
-	// Protected routes (Firebase auth required)
+	// Protected routes (Firebase auth required) - UPDATED to pass Firebase service
 	protected := api.Group("")
-	protected.Use(middleware.FirebaseAuth())
+	protected.Use(middleware.FirebaseAuth(firebaseService))
 	{
 		// User management
 		protected.POST("/users", userHandler.CreateUser)
@@ -149,6 +167,9 @@ func setupRoutes(
 		// File upload
 		protected.POST("/upload", uploadHandler.UploadFile)
 
+		// Episode search (protected for better analytics)
+		protected.GET("/episodes/search", episodeHandler.SearchEpisodes)
+
 		// Admin routes
 		admin := protected.Group("")
 		admin.Use(middleware.AdminOnly())
@@ -165,6 +186,7 @@ func setupRoutes(
 			admin.POST("/admin/dramas/:dramaId/episodes", episodeHandler.CreateEpisode)
 			admin.PUT("/admin/episodes/:episodeId", episodeHandler.UpdateEpisode)
 			admin.DELETE("/admin/episodes/:episodeId", episodeHandler.DeleteEpisode)
+			admin.POST("/admin/dramas/:dramaId/episodes/bulk", episodeHandler.BulkCreateEpisodes)
 
 			// Wallet management
 			admin.POST("/admin/wallet/:userId/add-coins", walletHandler.AddCoins)
