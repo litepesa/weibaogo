@@ -35,20 +35,20 @@ type UserPreferences struct {
 	DarkMode             bool `json:"darkMode"`
 }
 
-// Custom types for JSON handling in PostgreSQL
-type StringSlice []string
-
-func (s StringSlice) Value() (driver.Value, error) {
-	return json.Marshal(s)
-}
-
-func (s *StringSlice) Scan(value interface{}) error {
-	if value == nil {
-		*s = StringSlice{}
-		return nil
-	}
-	return json.Unmarshal(value.([]byte), s)
-}
+// REMOVE THIS DUPLICATE DEFINITION:
+// type StringSlice []string
+//
+// func (s StringSlice) Value() (driver.Value, error) {
+// 	return json.Marshal(s)
+// }
+//
+// func (s *StringSlice) Scan(value interface{}) error {
+// 	if value == nil {
+// 		*s = StringSlice{}
+// 		return nil
+// 	}
+// 	return json.Unmarshal(value.([]byte), s)
+// }
 
 type IntMap map[string]int
 
@@ -102,7 +102,3 @@ func (u *User) HasUnlocked(dramaID string) bool {
 func (u *User) GetDramaProgress(dramaID string) int {
 	return u.DramaProgress[dramaID]
 }
-
-// REMOVED: func (u *User) CanAfford(amount int) bool {
-// 	return u.CoinsBalance >= amount
-// }

@@ -1,5 +1,5 @@
 // ===============================
-// internal/services/drama.go - Complete Implementation
+// internal/services/drama.go - UNIFIED ARCHITECTURE
 // ===============================
 
 package services
@@ -30,18 +30,31 @@ func NewDramaService(db *sqlx.DB, r2Client *storage.R2Client) *DramaService {
 }
 
 // ===============================
-// DRAMA OPERATIONS
+// CORE DRAMA OPERATIONS
 // ===============================
 
-func (s *DramaService) GetDramas(ctx context.Context, limit int) ([]models.Drama, error) {
-	query := `
-		SELECT * FROM dramas 
-		WHERE is_active = true 
-		ORDER BY created_at DESC 
-		LIMIT $1`
+func (s *DramaService) GetDramas(ctx context.Context, limit, offset int, premiumFilter *bool) ([]models.Drama, error) {
+	var query string
+	var args []interface{}
+
+	if premiumFilter != nil {
+		query = `
+			SELECT * FROM dramas 
+			WHERE is_active = true AND is_premium = $1 
+			ORDER BY created_at DESC 
+			LIMIT $2 OFFSET $3`
+		args = []interface{}{*premiumFilter, limit, offset}
+	} else {
+		query = `
+			SELECT * FROM dramas 
+			WHERE is_active = true 
+			ORDER BY created_at DESC 
+			LIMIT $1 OFFSET $2`
+		args = []interface{}{limit, offset}
+	}
 
 	var dramas []models.Drama
-	err := s.db.SelectContext(ctx, &dramas, query, limit)
+	err := s.db.SelectContext(ctx, &dramas, query, args...)
 	return dramas, err
 }
 
@@ -72,12 +85,19 @@ func (s *DramaService) GetTrendingDramas(ctx context.Context, limit int) ([]mode
 func (s *DramaService) SearchDramas(ctx context.Context, searchQuery string, limit int) ([]models.Drama, error) {
 	query := `
 		SELECT * FROM dramas 
-		WHERE is_active = true AND title ILIKE $1 
-		ORDER BY created_at DESC 
+		WHERE is_active = true AND (
+			title ILIKE $1 OR 
+			description ILIKE $1
+		)
+		ORDER BY 
+			CASE WHEN title ILIKE $1 THEN 1 ELSE 2 END,
+			view_count DESC,
+			created_at DESC 
 		LIMIT $2`
 
+	searchPattern := "%" + searchQuery + "%"
 	var dramas []models.Drama
-	err := s.db.SelectContext(ctx, &dramas, query, "%"+searchQuery+"%", limit)
+	err := s.db.SelectContext(ctx, &dramas, query, searchPattern, limit)
 	return dramas, err
 }
 
@@ -90,98 +110,12 @@ func (s *DramaService) GetDrama(ctx context.Context, dramaID string) (*models.Dr
 		return nil, err
 	}
 
-	// Increment view count asynchronously
+	// Increment view count asynchronously (non-blocking)
 	go func() {
-		s.db.Exec("UPDATE dramas SET view_count = view_count + 1 WHERE drama_id = $1", dramaID)
+		s.incrementViewCount(dramaID)
 	}()
 
 	return &drama, nil
-}
-
-func (s *DramaService) CreateDrama(ctx context.Context, drama *models.Drama) (string, error) {
-	drama.DramaID = uuid.New().String()
-	drama.CreatedAt = time.Now()
-	drama.UpdatedAt = time.Now()
-	drama.PublishedAt = time.Now()
-	drama.IsActive = true
-	drama.ViewCount = 0
-	drama.FavoriteCount = 0
-
-	query := `
-		INSERT INTO dramas (
-			drama_id, title, description, banner_image, total_episodes,
-			is_premium, free_episodes_count, view_count, favorite_count,
-			is_featured, is_active, created_by, created_at, updated_at, published_at
-		) VALUES (
-			:drama_id, :title, :description, :banner_image, :total_episodes,
-			:is_premium, :free_episodes_count, :view_count, :favorite_count,
-			:is_featured, :is_active, :created_by, :created_at, :updated_at, :published_at
-		)`
-
-	_, err := s.db.NamedExecContext(ctx, query, drama)
-	return drama.DramaID, err
-}
-
-func (s *DramaService) UpdateDrama(ctx context.Context, drama *models.Drama) error {
-	drama.UpdatedAt = time.Now()
-
-	query := `
-		UPDATE dramas SET 
-			title = :title, 
-			description = :description, 
-			banner_image = :banner_image,
-			total_episodes = :total_episodes, 
-			is_premium = :is_premium, 
-			free_episodes_count = :free_episodes_count,
-			is_featured = :is_featured, 
-			is_active = :is_active, 
-			updated_at = :updated_at
-		WHERE drama_id = :drama_id`
-
-	_, err := s.db.NamedExecContext(ctx, query, drama)
-	return err
-}
-
-func (s *DramaService) DeleteDrama(ctx context.Context, dramaID string) error {
-	tx, err := s.db.BeginTxx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	// Delete episodes first
-	_, err = tx.ExecContext(ctx, "DELETE FROM episodes WHERE drama_id = $1", dramaID)
-	if err != nil {
-		return err
-	}
-
-	// Delete drama
-	_, err = tx.ExecContext(ctx, "DELETE FROM dramas WHERE drama_id = $1", dramaID)
-	if err != nil {
-		return err
-	}
-
-	return tx.Commit()
-}
-
-func (s *DramaService) ToggleFeatured(ctx context.Context, dramaID string, isFeatured bool) error {
-	query := `
-		UPDATE dramas 
-		SET is_featured = $1, updated_at = $2 
-		WHERE drama_id = $3`
-
-	_, err := s.db.ExecContext(ctx, query, isFeatured, time.Now(), dramaID)
-	return err
-}
-
-func (s *DramaService) ToggleActive(ctx context.Context, dramaID string, isActive bool) error {
-	query := `
-		UPDATE dramas 
-		SET is_active = $1, updated_at = $2 
-		WHERE drama_id = $3`
-
-	_, err := s.db.ExecContext(ctx, query, isActive, time.Now(), dramaID)
-	return err
 }
 
 func (s *DramaService) GetDramasByAdmin(ctx context.Context, adminID string) ([]models.Drama, error) {
@@ -196,293 +130,294 @@ func (s *DramaService) GetDramasByAdmin(ctx context.Context, adminID string) ([]
 }
 
 // ===============================
-// EPISODE OPERATIONS
+// UNIFIED DRAMA CREATION
 // ===============================
 
-func (s *DramaService) GetDramaEpisodes(ctx context.Context, dramaID string) ([]models.Episode, error) {
-	query := `
-		SELECT * FROM episodes 
-		WHERE drama_id = $1 
-		ORDER BY episode_number ASC`
-
-	var episodes []models.Episode
-	err := s.db.SelectContext(ctx, &episodes, query, dramaID)
-	return episodes, err
-}
-
-func (s *DramaService) GetEpisode(ctx context.Context, episodeID string) (*models.Episode, error) {
-	query := `SELECT * FROM episodes WHERE episode_id = $1`
-
-	var episode models.Episode
-	err := s.db.GetContext(ctx, &episode, query, episodeID)
-	if err != nil {
-		return nil, err
+func (s *DramaService) CreateDramaWithEpisodes(ctx context.Context, drama *models.Drama) (string, error) {
+	// Validate drama
+	if !drama.IsValidForCreation() {
+		errors := drama.ValidateForCreation()
+		return "", fmt.Errorf("validation failed: %v", errors)
 	}
 
-	// Increment view count asynchronously
-	go func() {
-		s.db.Exec("UPDATE episodes SET episode_view_count = episode_view_count + 1 WHERE episode_id = $1", episodeID)
-	}()
-
-	return &episode, nil
-}
-
-func (s *DramaService) CreateEpisode(ctx context.Context, episode *models.Episode) (string, error) {
-	episode.EpisodeID = uuid.New().String()
-	episode.CreatedAt = time.Now()
-	episode.UpdatedAt = time.Now()
-	episode.ReleasedAt = time.Now()
-	episode.EpisodeViewCount = 0
-
-	tx, err := s.db.BeginTxx(ctx, nil)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback()
-
-	// Check for duplicate episode number
-	var existingCount int
-	err = tx.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM episodes WHERE drama_id = $1 AND episode_number = $2",
-		episode.DramaID, episode.EpisodeNumber).Scan(&existingCount)
-	if err != nil {
-		return "", err
-	}
-
-	if existingCount > 0 {
-		return "", errors.New("duplicate_episode_number")
-	}
+	// Set metadata
+	drama.DramaID = uuid.New().String()
+	drama.CreatedAt = time.Now()
+	drama.UpdatedAt = time.Now()
+	drama.IsActive = true
+	drama.ViewCount = 0
+	drama.FavoriteCount = 0
 
 	query := `
-		INSERT INTO episodes (
-			episode_id, drama_id, episode_number, episode_title,
-			thumbnail_url, video_url, video_duration, episode_view_count,
-			uploaded_by, created_at, updated_at, released_at
+		INSERT INTO dramas (
+			drama_id, title, description, banner_image, episode_videos,
+			is_premium, free_episodes_count, view_count, favorite_count,
+			is_featured, is_active, created_by, created_at, updated_at
 		) VALUES (
-			:episode_id, :drama_id, :episode_number, :episode_title,
-			:thumbnail_url, :video_url, :video_duration, :episode_view_count,
-			:uploaded_by, :created_at, :updated_at, :released_at
+			:drama_id, :title, :description, :banner_image, :episode_videos,
+			:is_premium, :free_episodes_count, :view_count, :favorite_count,
+			:is_featured, :is_active, :created_by, :created_at, :updated_at
 		)`
 
-	_, err = tx.NamedExecContext(ctx, query, episode)
-	if err != nil {
-		return "", err
-	}
-
-	// Update drama's total episodes count
-	_, err = tx.ExecContext(ctx, `
-		UPDATE dramas 
-		SET total_episodes = (SELECT COUNT(*) FROM episodes WHERE drama_id = $1),
-		    updated_at = $2 
-		WHERE drama_id = $1`, episode.DramaID, time.Now())
-	if err != nil {
-		return "", err
-	}
-
-	if err = tx.Commit(); err != nil {
-		return "", err
-	}
-
-	return episode.EpisodeID, nil
+	_, err := s.db.NamedExecContext(ctx, query, drama)
+	return drama.DramaID, err
 }
 
-func (s *DramaService) UpdateEpisode(ctx context.Context, episode *models.Episode) error {
-	episode.UpdatedAt = time.Now()
+// ===============================
+// DRAMA UPDATE AND DELETE
+// ===============================
 
+func (s *DramaService) UpdateDrama(ctx context.Context, drama *models.Drama) error {
+	// Validate drama
+	if !drama.IsValidForCreation() {
+		errors := drama.ValidateForCreation()
+		return fmt.Errorf("validation failed: %v", errors)
+	}
+
+	drama.UpdatedAt = time.Now()
+
+	query := `
+		UPDATE dramas SET 
+			title = :title, 
+			description = :description, 
+			banner_image = :banner_image,
+			episode_videos = :episode_videos,
+			is_premium = :is_premium, 
+			free_episodes_count = :free_episodes_count,
+			is_featured = :is_featured, 
+			is_active = :is_active, 
+			updated_at = :updated_at
+		WHERE drama_id = :drama_id`
+
+	result, err := s.db.NamedExecContext(ctx, query, drama)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rowsAffected == 0 {
+		return errors.New("drama_not_found")
+	}
+
+	return nil
+}
+
+func (s *DramaService) DeleteDrama(ctx context.Context, dramaID string) error {
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	// Check if episode exists
+	// Check if drama exists
 	var exists int
-	err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM episodes WHERE episode_id = $1", episode.EpisodeID).Scan(&exists)
+	err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM dramas WHERE drama_id = $1", dramaID).Scan(&exists)
 	if err != nil {
 		return err
 	}
 	if exists == 0 {
-		return errors.New("episode_not_found")
+		return errors.New("drama_not_found")
 	}
 
-	// Check for duplicate episode number (excluding current episode)
-	var duplicateCount int
-	err = tx.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM episodes WHERE drama_id = $1 AND episode_number = $2 AND episode_id != $3",
-		episode.DramaID, episode.EpisodeNumber, episode.EpisodeID).Scan(&duplicateCount)
+	// Delete from user favorites and watch history
+	_, err = tx.ExecContext(ctx, `
+		UPDATE users 
+		SET favorite_dramas = array_remove(favorite_dramas, $1),
+		    unlocked_dramas = array_remove(unlocked_dramas, $1),
+		    updated_at = $2
+		WHERE $1 = ANY(favorite_dramas) OR $1 = ANY(unlocked_dramas)`,
+		dramaID, time.Now())
 	if err != nil {
 		return err
 	}
 
-	if duplicateCount > 0 {
-		return errors.New("duplicate_episode_number")
+	// Delete drama progress records
+	_, err = tx.ExecContext(ctx, "DELETE FROM user_drama_progress WHERE drama_id = $1", dramaID)
+	if err != nil {
+		return err
+	}
+
+	// Delete the drama
+	_, err = tx.ExecContext(ctx, "DELETE FROM dramas WHERE drama_id = $1", dramaID)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// ===============================
+// DRAMA STATUS TOGGLES
+// ===============================
+
+func (s *DramaService) ToggleFeatured(ctx context.Context, dramaID string, isFeatured bool) error {
+	query := `
+		UPDATE dramas 
+		SET is_featured = $1, updated_at = $2 
+		WHERE drama_id = $3 AND is_active = true`
+
+	result, err := s.db.ExecContext(ctx, query, isFeatured, time.Now(), dramaID)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rowsAffected == 0 {
+		return errors.New("drama_not_found")
+	}
+
+	return nil
+}
+
+func (s *DramaService) ToggleActive(ctx context.Context, dramaID string, isActive bool) error {
+	query := `
+		UPDATE dramas 
+		SET is_active = $1, updated_at = $2 
+		WHERE drama_id = $3`
+
+	result, err := s.db.ExecContext(ctx, query, isActive, time.Now(), dramaID)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rowsAffected == 0 {
+		return errors.New("drama_not_found")
+	}
+
+	return nil
+}
+
+// ===============================
+// DRAMA INTERACTIONS
+// ===============================
+
+func (s *DramaService) IncrementDramaViews(ctx context.Context, dramaID string) error {
+	query := `
+		UPDATE dramas 
+		SET view_count = view_count + 1, updated_at = $1 
+		WHERE drama_id = $2 AND is_active = true`
+
+	_, err := s.db.ExecContext(ctx, query, time.Now(), dramaID)
+	return err
+}
+
+func (s *DramaService) IncrementDramaFavorites(ctx context.Context, dramaID string, isAdding bool) error {
+	increment := 1
+	if !isAdding {
+		increment = -1
 	}
 
 	query := `
-		UPDATE episodes SET 
-			episode_number = :episode_number, 
-			episode_title = :episode_title,
-			thumbnail_url = :thumbnail_url, 
-			video_url = :video_url, 
-			video_duration = :video_duration,
-			updated_at = :updated_at
-		WHERE episode_id = :episode_id`
-
-	_, err = tx.NamedExecContext(ctx, query, episode)
-	if err != nil {
-		return err
-	}
-
-	return tx.Commit()
-}
-
-func (s *DramaService) DeleteEpisode(ctx context.Context, episodeID string) error {
-	tx, err := s.db.BeginTxx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	// Check if episode exists and get drama ID
-	var dramaID string
-	err = tx.QueryRowContext(ctx, "SELECT drama_id FROM episodes WHERE episode_id = $1", episodeID).Scan(&dramaID)
-	if err != nil {
-		return errors.New("episode_not_found")
-	}
-
-	// Delete episode
-	_, err = tx.ExecContext(ctx, "DELETE FROM episodes WHERE episode_id = $1", episodeID)
-	if err != nil {
-		return err
-	}
-
-	// Update drama's total episodes count
-	_, err = tx.ExecContext(ctx, `
 		UPDATE dramas 
-		SET total_episodes = (SELECT COUNT(*) FROM episodes WHERE drama_id = $1),
-		    updated_at = $2 
-		WHERE drama_id = $1`, dramaID, time.Now())
-	if err != nil {
-		return err
-	}
+		SET favorite_count = GREATEST(0, favorite_count + $1), updated_at = $2 
+		WHERE drama_id = $3 AND is_active = true`
 
-	return tx.Commit()
+	_, err := s.db.ExecContext(ctx, query, increment, time.Now(), dramaID)
+	return err
+}
+
+// Helper method for async view counting
+func (s *DramaService) incrementViewCount(dramaID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	query := `UPDATE dramas SET view_count = view_count + 1 WHERE drama_id = $1 AND is_active = true`
+	s.db.ExecContext(ctx, query, dramaID)
 }
 
 // ===============================
-// BULK OPERATIONS
+// EPISODE-LIKE OPERATIONS (for compatibility)
 // ===============================
 
-func (s *DramaService) BulkCreateEpisodes(ctx context.Context, episodes []models.Episode) ([]string, error) {
-	if len(episodes) == 0 {
-		return nil, errors.New("no episodes provided")
-	}
-
-	tx, err := s.db.BeginTxx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	dramaID := episodes[0].DramaID
-	var episodeIDs []string
-
-	// Check for duplicate episode numbers within the batch and existing episodes
-	episodeNumbers := make(map[int]bool)
-	for _, episode := range episodes {
-		if episodeNumbers[episode.EpisodeNumber] {
-			return nil, errors.New("duplicate_episode_numbers")
-		}
-		episodeNumbers[episode.EpisodeNumber] = true
-
-		// Check if episode number already exists in database
-		var existingCount int
-		err = tx.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM episodes WHERE drama_id = $1 AND episode_number = $2",
-			dramaID, episode.EpisodeNumber).Scan(&existingCount)
-		if err != nil {
-			return nil, err
-		}
-		if existingCount > 0 {
-			return nil, errors.New("duplicate_episode_numbers")
-		}
-	}
-
-	// Insert all episodes
-	for _, episode := range episodes {
-		episode.EpisodeID = uuid.New().String()
-		episode.CreatedAt = time.Now()
-		episode.UpdatedAt = time.Now()
-		episode.ReleasedAt = time.Now()
-		episode.EpisodeViewCount = 0
-
-		query := `
-			INSERT INTO episodes (
-				episode_id, drama_id, episode_number, episode_title,
-				thumbnail_url, video_url, video_duration, episode_view_count,
-				uploaded_by, created_at, updated_at, released_at
-			) VALUES (
-				:episode_id, :drama_id, :episode_number, :episode_title,
-				:thumbnail_url, :video_url, :video_duration, :episode_view_count,
-				:uploaded_by, :created_at, :updated_at, :released_at
-			)`
-
-		_, err = tx.NamedExecContext(ctx, query, episode)
-		if err != nil {
-			return nil, err
-		}
-
-		episodeIDs = append(episodeIDs, episode.EpisodeID)
-	}
-
-	// Update drama's total episodes count
-	_, err = tx.ExecContext(ctx, `
-		UPDATE dramas 
-		SET total_episodes = (SELECT COUNT(*) FROM episodes WHERE drama_id = $1),
-		    updated_at = $2 
-		WHERE drama_id = $1`, dramaID, time.Now())
+// GetDramaEpisodes returns episodes as Episode structs for frontend compatibility
+func (s *DramaService) GetDramaEpisodes(ctx context.Context, dramaID string) ([]models.Episode, error) {
+	drama, err := s.GetDrama(ctx, dramaID)
 	if err != nil {
 		return nil, err
 	}
 
-	if err = tx.Commit(); err != nil {
-		return nil, err
-	}
-
-	return episodeIDs, nil
+	return drama.GetAllEpisodes(), nil
 }
 
-// ===============================
-// SEARCH AND FILTER OPERATIONS
-// ===============================
+// GetEpisode returns a specific episode by drama ID and episode number
+func (s *DramaService) GetEpisodeByNumber(ctx context.Context, dramaID string, episodeNumber int) (*models.Episode, error) {
+	drama, err := s.GetDrama(ctx, dramaID)
+	if err != nil {
+		return nil, err
+	}
 
+	episode := drama.GetEpisode(episodeNumber)
+	if episode == nil {
+		return nil, errors.New("episode_not_found")
+	}
+
+	return episode, nil
+}
+
+// SearchEpisodes searches for episodes across all dramas
 func (s *DramaService) SearchEpisodes(ctx context.Context, query, dramaID string, limit int) ([]models.Episode, error) {
 	var episodes []models.Episode
-	var sqlQuery string
-	var args []interface{}
 
 	if dramaID != "" {
-		sqlQuery = `
-			SELECT * FROM episodes 
-			WHERE drama_id = $1 AND episode_title ILIKE $2 
-			ORDER BY episode_number ASC 
-			LIMIT $3`
-		args = []interface{}{dramaID, "%" + query + "%", limit}
+		// Search within specific drama
+		drama, err := s.GetDrama(ctx, dramaID)
+		if err != nil {
+			return nil, err
+		}
+
+		allEpisodes := drama.GetAllEpisodes()
+		// Simple search by episode number (could be enhanced)
+		for _, ep := range allEpisodes {
+			if len(episodes) >= limit {
+				break
+			}
+			episodes = append(episodes, ep)
+		}
 	} else {
-		sqlQuery = `
-			SELECT * FROM episodes 
-			WHERE episode_title ILIKE $1 
-			ORDER BY created_at DESC 
-			LIMIT $2`
-		args = []interface{}{"%" + query + "%", limit}
+		// Search across all dramas (limit results)
+		searchLimit := limit / 10 // Get fewer dramas to avoid too many episodes
+		if searchLimit < 1 {
+			searchLimit = 1
+		}
+
+		dramas, err := s.SearchDramas(ctx, query, searchLimit)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, drama := range dramas {
+			if len(episodes) >= limit {
+				break
+			}
+
+			dramaEpisodes := drama.GetAllEpisodes()
+			for _, ep := range dramaEpisodes {
+				if len(episodes) >= limit {
+					break
+				}
+				episodes = append(episodes, ep)
+			}
+		}
 	}
 
-	err := s.db.SelectContext(ctx, &episodes, sqlQuery, args...)
-	return episodes, err
+	return episodes, nil
 }
 
 // ===============================
-// DRAMA UNLOCK OPERATION - UPDATED
+// DRAMA UNLOCK OPERATION
 // ===============================
 
 func (s *DramaService) UnlockDrama(ctx context.Context, userID, dramaID string) (bool, int, error) {
@@ -492,7 +427,7 @@ func (s *DramaService) UnlockDrama(ctx context.Context, userID, dramaID string) 
 	}
 	defer tx.Rollback()
 
-	// UPDATED: Get user unlocked dramas from users table and balance from wallet
+	// Get user unlocked dramas from users table and balance from wallet
 	var user models.User
 	query := `SELECT unlocked_dramas FROM users WHERE uid = $1`
 	err = tx.GetContext(ctx, &user, query, userID)
@@ -500,7 +435,7 @@ func (s *DramaService) UnlockDrama(ctx context.Context, userID, dramaID string) 
 		return false, 0, errors.New("user_not_found")
 	}
 
-	// UPDATED: Get current balance from wallet table
+	// Get current balance from wallet table
 	var currentBalance int
 	query = `SELECT coins_balance FROM wallets WHERE user_id = $1`
 	err = tx.QueryRowContext(ctx, query, userID).Scan(&currentBalance)
@@ -534,7 +469,7 @@ func (s *DramaService) UnlockDrama(ctx context.Context, userID, dramaID string) 
 		return false, currentBalance, errors.New("insufficient_funds")
 	}
 
-	// Update user unlocked dramas (only this field)
+	// Update user unlocked dramas
 	newUnlocked := append(user.UnlockedDramas, dramaID)
 	newBalance := currentBalance - unlockCost
 
@@ -547,7 +482,7 @@ func (s *DramaService) UnlockDrama(ctx context.Context, userID, dramaID string) 
 		return false, 0, err
 	}
 
-	// UPDATED: Update wallet balance (single source of truth)
+	// Update wallet balance
 	query = `
 		UPDATE wallets 
 		SET coins_balance = $1, updated_at = $2 
@@ -560,9 +495,10 @@ func (s *DramaService) UnlockDrama(ctx context.Context, userID, dramaID string) 
 	// Create transaction record
 	transactionID := uuid.New().String()
 	metadata := models.MetadataMap{
-		"dramaId":    dramaID,
-		"dramaTitle": drama.Title,
-		"unlockType": "full_drama",
+		"dramaId":      dramaID,
+		"dramaTitle":   drama.Title,
+		"unlockType":   "full_drama",
+		"episodeCount": fmt.Sprintf("%d", len(drama.EpisodeVideos)),
 	}
 
 	transaction := models.WalletTransaction{
@@ -573,7 +509,7 @@ func (s *DramaService) UnlockDrama(ctx context.Context, userID, dramaID string) 
 		CoinAmount:    unlockCost,
 		BalanceBefore: currentBalance,
 		BalanceAfter:  newBalance,
-		Description:   fmt.Sprintf("Unlocked: %s", drama.Title),
+		Description:   fmt.Sprintf("Unlocked: %s (%d episodes)", drama.Title, len(drama.EpisodeVideos)),
 		ReferenceID:   &dramaID,
 		Metadata:      metadata,
 		CreatedAt:     time.Now(),

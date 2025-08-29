@@ -36,12 +36,12 @@ func (h *UploadHandler) UploadFile(c *gin.Context) {
 		return
 	}
 
-	// Validate file type
+	// Validate file type - Added TS support for videos
 	allowedTypes := map[string][]string{
 		"banner":    {".jpg", ".jpeg", ".png", ".webp"},
 		"thumbnail": {".jpg", ".jpeg", ".png", ".webp"},
 		"profile":   {".jpg", ".jpeg", ".png", ".webp"},
-		"video":     {".mp4", ".mov", ".avi", ".webm"},
+		"video":     {".mp4", ".mov", ".avi", ".webm", ".ts"}, // Added .ts support
 	}
 
 	ext := strings.ToLower(filepath.Ext(header.Filename))
