@@ -1,5 +1,5 @@
 // ===============================
-// internal/services/drama.go - UNIFIED ARCHITECTURE
+// internal/services/drama.go - WITH OWNERSHIP VERIFICATION
 // ===============================
 
 package services
@@ -30,7 +30,70 @@ func NewDramaService(db *sqlx.DB, r2Client *storage.R2Client) *DramaService {
 }
 
 // ===============================
-// CORE DRAMA OPERATIONS
+// OWNERSHIP VERIFICATION
+// ===============================
+
+// CheckDramaOwnership verifies if a user owns/created a specific drama
+func (s *DramaService) CheckDramaOwnership(ctx context.Context, dramaID, userID string) (bool, error) {
+	var createdBy string
+	query := `SELECT created_by FROM dramas WHERE drama_id = $1`
+	err := s.db.QueryRowContext(ctx, query, dramaID).Scan(&createdBy)
+	if err != nil {
+		return false, err
+	}
+	return createdBy == userID, nil
+}
+
+// CheckMultipleDramaOwnership verifies ownership for multiple dramas at once
+func (s *DramaService) CheckMultipleDramaOwnership(ctx context.Context, dramaIDs []string, userID string) (map[string]bool, error) {
+	if len(dramaIDs) == 0 {
+		return make(map[string]bool), nil
+	}
+
+	// Create placeholders for the IN query
+	placeholders := ""
+	args := []interface{}{userID}
+	for i, id := range dramaIDs {
+		if i > 0 {
+			placeholders += ", "
+		}
+		placeholders += fmt.Sprintf("$%d", i+2)
+		args = append(args, id)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT drama_id, (created_by = $1) as owns 
+		FROM dramas 
+		WHERE drama_id IN (%s)`, placeholders)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]bool)
+	for rows.Next() {
+		var dramaID string
+		var owns bool
+		if err := rows.Scan(&dramaID, &owns); err != nil {
+			return nil, err
+		}
+		result[dramaID] = owns
+	}
+
+	// Set false for any dramas not found in database
+	for _, id := range dramaIDs {
+		if _, exists := result[id]; !exists {
+			result[id] = false
+		}
+	}
+
+	return result, nil
+}
+
+// ===============================
+// CORE DRAMA OPERATIONS (unchanged)
 // ===============================
 
 func (s *DramaService) GetDramas(ctx context.Context, limit, offset int, premiumFilter *bool) ([]models.Drama, error) {
@@ -118,6 +181,7 @@ func (s *DramaService) GetDrama(ctx context.Context, dramaID string) (*models.Dr
 	return &drama, nil
 }
 
+// UPDATED: Only return dramas created by the specific admin
 func (s *DramaService) GetDramasByAdmin(ctx context.Context, adminID string) ([]models.Drama, error) {
 	query := `
 		SELECT * FROM dramas 
@@ -129,8 +193,20 @@ func (s *DramaService) GetDramasByAdmin(ctx context.Context, adminID string) ([]
 	return dramas, err
 }
 
+// NEW: Get all dramas for super admin or platform management (if needed)
+func (s *DramaService) GetAllDramasForAdmin(ctx context.Context, limit, offset int) ([]models.Drama, error) {
+	query := `
+		SELECT * FROM dramas 
+		ORDER BY created_at DESC 
+		LIMIT $1 OFFSET $2`
+
+	var dramas []models.Drama
+	err := s.db.SelectContext(ctx, &dramas, query, limit, offset)
+	return dramas, err
+}
+
 // ===============================
-// UNIFIED DRAMA CREATION
+// UNIFIED DRAMA CREATION (unchanged)
 // ===============================
 
 func (s *DramaService) CreateDramaWithEpisodes(ctx context.Context, drama *models.Drama) (string, error) {
@@ -164,7 +240,7 @@ func (s *DramaService) CreateDramaWithEpisodes(ctx context.Context, drama *model
 }
 
 // ===============================
-// DRAMA UPDATE AND DELETE
+// DRAMA UPDATE AND DELETE - WITH OWNERSHIP VERIFICATION
 // ===============================
 
 func (s *DramaService) UpdateDrama(ctx context.Context, drama *models.Drama) error {
@@ -187,7 +263,7 @@ func (s *DramaService) UpdateDrama(ctx context.Context, drama *models.Drama) err
 			is_featured = :is_featured, 
 			is_active = :is_active, 
 			updated_at = :updated_at
-		WHERE drama_id = :drama_id`
+		WHERE drama_id = :drama_id AND created_by = :created_by`
 
 	result, err := s.db.NamedExecContext(ctx, query, drama)
 	if err != nil {
@@ -200,20 +276,21 @@ func (s *DramaService) UpdateDrama(ctx context.Context, drama *models.Drama) err
 	}
 
 	if rowsAffected == 0 {
-		return errors.New("drama_not_found")
+		return errors.New("drama_not_found_or_no_access")
 	}
 
 	return nil
 }
 
 func (s *DramaService) DeleteDrama(ctx context.Context, dramaID string) error {
+	// Note: Ownership verification should be done in the handler before calling this
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	// Check if drama exists
+	// Check if drama exists (ownership already verified in handler)
 	var exists int
 	err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM dramas WHERE drama_id = $1", dramaID).Scan(&exists)
 	if err != nil {
@@ -251,10 +328,11 @@ func (s *DramaService) DeleteDrama(ctx context.Context, dramaID string) error {
 }
 
 // ===============================
-// DRAMA STATUS TOGGLES
+// DRAMA STATUS TOGGLES - WITH OWNERSHIP VERIFICATION
 // ===============================
 
 func (s *DramaService) ToggleFeatured(ctx context.Context, dramaID string, isFeatured bool) error {
+	// Note: Ownership verification should be done in handler before calling this
 	query := `
 		UPDATE dramas 
 		SET is_featured = $1, updated_at = $2 
@@ -278,6 +356,7 @@ func (s *DramaService) ToggleFeatured(ctx context.Context, dramaID string, isFea
 }
 
 func (s *DramaService) ToggleActive(ctx context.Context, dramaID string, isActive bool) error {
+	// Note: Ownership verification should be done in handler before calling this
 	query := `
 		UPDATE dramas 
 		SET is_active = $1, updated_at = $2 
@@ -301,7 +380,7 @@ func (s *DramaService) ToggleActive(ctx context.Context, dramaID string, isActiv
 }
 
 // ===============================
-// DRAMA INTERACTIONS
+// DRAMA INTERACTIONS (unchanged)
 // ===============================
 
 func (s *DramaService) IncrementDramaViews(ctx context.Context, dramaID string) error {
@@ -339,7 +418,7 @@ func (s *DramaService) incrementViewCount(dramaID string) {
 }
 
 // ===============================
-// EPISODE-LIKE OPERATIONS (for compatibility)
+// EPISODE-LIKE OPERATIONS (for compatibility - unchanged)
 // ===============================
 
 // GetDramaEpisodes returns episodes as Episode structs for frontend compatibility
@@ -417,7 +496,7 @@ func (s *DramaService) SearchEpisodes(ctx context.Context, query, dramaID string
 }
 
 // ===============================
-// DRAMA UNLOCK OPERATION
+// DRAMA UNLOCK OPERATION (unchanged)
 // ===============================
 
 func (s *DramaService) UnlockDrama(ctx context.Context, userID, dramaID string) (bool, int, error) {

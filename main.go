@@ -93,7 +93,8 @@ func main() {
 	})
 
 	// API routes - UNIFIED ARCHITECTURE (NO EPISODE HANDLER)
-	setupUnifiedRoutes(router, firebaseService, authHandler, userHandler, dramaHandler, walletHandler, uploadHandler)
+	// FIXED: Pass dramaService as parameter
+	setupUnifiedRoutes(router, firebaseService, authHandler, userHandler, dramaHandler, walletHandler, uploadHandler, dramaService)
 
 	// Start server
 	port := cfg.Port
@@ -115,6 +116,7 @@ func setupUnifiedRoutes(
 	dramaHandler *handlers.DramaHandler,
 	walletHandler *handlers.WalletHandler,
 	uploadHandler *handlers.UploadHandler,
+	dramaService *services.DramaService, // ADDED: dramaService parameter
 ) {
 	api := router.Group("/api/v1")
 
@@ -144,8 +146,7 @@ func setupUnifiedRoutes(
 				return
 			}
 
-			// Get drama service from context or recreate
-			dramaService := c.MustGet("dramaService").(*services.DramaService)
+			// FIXED: Use dramaService parameter directly instead of c.MustGet
 			episodes, err := dramaService.GetDramaEpisodes(c.Request.Context(), dramaID)
 			if err != nil {
 				c.JSON(404, gin.H{"error": "Drama not found"})
@@ -172,7 +173,7 @@ func setupUnifiedRoutes(
 				return
 			}
 
-			dramaService := c.MustGet("dramaService").(*services.DramaService)
+			// FIXED: Use dramaService parameter directly instead of c.MustGet
 			episode, err := dramaService.GetEpisodeByNumber(c.Request.Context(), dramaID, epNum)
 			if err != nil {
 				c.JSON(404, gin.H{"error": "Episode not found"})
@@ -187,12 +188,7 @@ func setupUnifiedRoutes(
 	protected := api.Group("")
 	protected.Use(middleware.FirebaseAuth(firebaseService))
 	{
-		// Inject drama service into context for compatibility endpoints
-		protected.Use(func(c *gin.Context) {
-			// You'll need to pass dramaService here - this is a simplified example
-			// In practice, you might store this in a global variable or dependency container
-			c.Next()
-		})
+		// REMOVED: The problematic middleware that was trying to set dramaService in context
 
 		// User management
 		protected.POST("/users", userHandler.CreateUser)

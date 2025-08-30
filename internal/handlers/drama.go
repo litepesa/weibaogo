@@ -1,5 +1,5 @@
 // ===============================
-// internal/handlers/drama.go - UNIFIED ARCHITECTURE
+// internal/handlers/drama.go - ADMIN OWNERSHIP RESTRICTION
 // ===============================
 
 package handlers
@@ -23,7 +23,7 @@ func NewDramaHandler(service *services.DramaService) *DramaHandler {
 }
 
 // ===============================
-// PUBLIC DRAMA ENDPOINTS
+// PUBLIC DRAMA ENDPOINTS (unchanged)
 // ===============================
 
 func (h *DramaHandler) GetDramas(c *gin.Context) {
@@ -136,7 +136,7 @@ func (h *DramaHandler) GetDrama(c *gin.Context) {
 }
 
 // ===============================
-// DRAMA UNLOCK ENDPOINT
+// DRAMA UNLOCK ENDPOINT (unchanged)
 // ===============================
 
 func (h *DramaHandler) UnlockDrama(c *gin.Context) {
@@ -184,7 +184,7 @@ func (h *DramaHandler) UnlockDrama(c *gin.Context) {
 }
 
 // ===============================
-// DRAMA INTERACTION ENDPOINTS
+// DRAMA INTERACTION ENDPOINTS (unchanged)
 // ===============================
 
 func (h *DramaHandler) IncrementViews(c *gin.Context) {
@@ -235,7 +235,7 @@ func (h *DramaHandler) ToggleFavorite(c *gin.Context) {
 }
 
 // ===============================
-// ADMIN DRAMA MANAGEMENT
+// ADMIN DRAMA MANAGEMENT - WITH OWNERSHIP CHECKS
 // ===============================
 
 func (h *DramaHandler) CreateDramaWithEpisodes(c *gin.Context) {
@@ -287,7 +287,7 @@ func (h *DramaHandler) CreateDramaWithEpisodes(c *gin.Context) {
 		FreeEpisodesCount: request.FreeEpisodesCount,
 		IsFeatured:        request.IsFeatured,
 		IsActive:          request.IsActive,
-		CreatedBy:         userID,
+		CreatedBy:         userID, // Set creator as current user
 	}
 
 	dramaID, err := h.service.CreateDramaWithEpisodes(c.Request.Context(), drama)
@@ -315,6 +315,17 @@ func (h *DramaHandler) UpdateDrama(c *gin.Context) {
 		return
 	}
 
+	// Check ownership BEFORE allowing update
+	hasAccess, err := h.service.CheckDramaOwnership(c.Request.Context(), dramaID, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify ownership"})
+		return
+	}
+	if !hasAccess {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You can only update dramas you created"})
+		return
+	}
+
 	var drama models.Drama
 	if err := c.ShouldBindJSON(&drama); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -322,6 +333,7 @@ func (h *DramaHandler) UpdateDrama(c *gin.Context) {
 	}
 
 	drama.DramaID = dramaID
+	drama.CreatedBy = userID // Ensure creator stays the same
 
 	// Validate episode videos if provided
 	if len(drama.EpisodeVideos) > 100 {
@@ -335,7 +347,7 @@ func (h *DramaHandler) UpdateDrama(c *gin.Context) {
 		return
 	}
 
-	err := h.service.UpdateDrama(c.Request.Context(), &drama)
+	err = h.service.UpdateDrama(c.Request.Context(), &drama)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update drama"})
 		return
@@ -357,7 +369,18 @@ func (h *DramaHandler) DeleteDrama(c *gin.Context) {
 		return
 	}
 
-	err := h.service.DeleteDrama(c.Request.Context(), dramaID)
+	// Check ownership BEFORE allowing deletion
+	hasAccess, err := h.service.CheckDramaOwnership(c.Request.Context(), dramaID, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify ownership"})
+		return
+	}
+	if !hasAccess {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You can only delete dramas you created"})
+		return
+	}
+
+	err = h.service.DeleteDrama(c.Request.Context(), dramaID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete drama"})
 		return
@@ -373,6 +396,23 @@ func (h *DramaHandler) ToggleFeatured(c *gin.Context) {
 		return
 	}
 
+	userID := c.GetString("userID")
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	// Check ownership BEFORE allowing toggle
+	hasAccess, err := h.service.CheckDramaOwnership(c.Request.Context(), dramaID, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify ownership"})
+		return
+	}
+	if !hasAccess {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You can only modify dramas you created"})
+		return
+	}
+
 	var request struct {
 		IsFeatured bool `json:"isFeatured"`
 	}
@@ -382,7 +422,7 @@ func (h *DramaHandler) ToggleFeatured(c *gin.Context) {
 		return
 	}
 
-	err := h.service.ToggleFeatured(c.Request.Context(), dramaID, request.IsFeatured)
+	err = h.service.ToggleFeatured(c.Request.Context(), dramaID, request.IsFeatured)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to toggle featured status"})
 		return
@@ -403,6 +443,23 @@ func (h *DramaHandler) ToggleActive(c *gin.Context) {
 		return
 	}
 
+	userID := c.GetString("userID")
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	// Check ownership BEFORE allowing toggle
+	hasAccess, err := h.service.CheckDramaOwnership(c.Request.Context(), dramaID, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify ownership"})
+		return
+	}
+	if !hasAccess {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You can only modify dramas you created"})
+		return
+	}
+
 	var request struct {
 		IsActive bool `json:"isActive"`
 	}
@@ -412,7 +469,7 @@ func (h *DramaHandler) ToggleActive(c *gin.Context) {
 		return
 	}
 
-	err := h.service.ToggleActive(c.Request.Context(), dramaID, request.IsActive)
+	err = h.service.ToggleActive(c.Request.Context(), dramaID, request.IsActive)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to toggle active status"})
 		return
@@ -426,6 +483,7 @@ func (h *DramaHandler) ToggleActive(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Drama " + status + " successfully"})
 }
 
+// Only return dramas created by the current admin
 func (h *DramaHandler) GetAdminDramas(c *gin.Context) {
 	userID := c.GetString("userID")
 	if userID == "" {
@@ -436,6 +494,40 @@ func (h *DramaHandler) GetAdminDramas(c *gin.Context) {
 	dramas, err := h.service.GetDramasByAdmin(c.Request.Context(), userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch admin dramas"})
+		return
+	}
+
+	c.JSON(http.StatusOK, dramas)
+}
+
+// NEW: Get all dramas for super admin (if needed in future)
+func (h *DramaHandler) GetAllDramasForSuperAdmin(c *gin.Context) {
+	userID := c.GetString("userID")
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	// Check if user is super admin (you can add this field to user model later)
+	// For now, this endpoint is commented out but ready for future use
+
+	limit := 50
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 200 {
+			limit = parsed
+		}
+	}
+
+	offset := 0
+	if o := c.Query("offset"); o != "" {
+		if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+
+	dramas, err := h.service.GetAllDramasForAdmin(c.Request.Context(), limit, offset)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch all dramas"})
 		return
 	}
 
