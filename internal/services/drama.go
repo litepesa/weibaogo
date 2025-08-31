@@ -1,5 +1,5 @@
 // ===============================
-// internal/services/drama.go - WITH OWNERSHIP VERIFICATION
+// internal/services/drama.go - WITH OWNERSHIP VERIFICATION AND UNLOCK COUNT TRACKING
 // ===============================
 
 package services
@@ -496,7 +496,7 @@ func (s *DramaService) SearchEpisodes(ctx context.Context, query, dramaID string
 }
 
 // ===============================
-// DRAMA UNLOCK OPERATION (unchanged)
+// DRAMA UNLOCK OPERATION - WITH UNLOCK COUNT TRACKING
 // ===============================
 
 func (s *DramaService) UnlockDrama(ctx context.Context, userID, dramaID string) (bool, int, error) {
@@ -571,6 +571,16 @@ func (s *DramaService) UnlockDrama(ctx context.Context, userID, dramaID string) 
 		return false, 0, err
 	}
 
+	// UPDATED: Increment unlock count in dramas table for revenue tracking
+	query = `
+		UPDATE dramas 
+		SET unlock_count = unlock_count + 1, updated_at = $1 
+		WHERE drama_id = $2`
+	_, err = tx.ExecContext(ctx, query, time.Now(), dramaID)
+	if err != nil {
+		return false, 0, err
+	}
+
 	// Create transaction record
 	transactionID := uuid.New().String()
 	metadata := models.MetadataMap{
@@ -578,6 +588,7 @@ func (s *DramaService) UnlockDrama(ctx context.Context, userID, dramaID string) 
 		"dramaTitle":   drama.Title,
 		"unlockType":   "full_drama",
 		"episodeCount": fmt.Sprintf("%d", len(drama.EpisodeVideos)),
+		"unlockCost":   unlockCost,
 	}
 
 	transaction := models.WalletTransaction{
@@ -616,4 +627,82 @@ func (s *DramaService) UnlockDrama(ctx context.Context, userID, dramaID string) 
 	}
 
 	return true, newBalance, nil
+}
+
+// ===============================
+// REVENUE ANALYTICS - BASED ON ACTUAL UNLOCK COUNT
+// ===============================
+
+// GetDramaRevenue returns exact revenue for a specific drama
+func (s *DramaService) GetDramaRevenue(ctx context.Context, dramaID string) (int, error) {
+	var unlockCount int
+	query := `SELECT unlock_count FROM dramas WHERE drama_id = $1`
+	err := s.db.QueryRowContext(ctx, query, dramaID).Scan(&unlockCount)
+	if err != nil {
+		return 0, err
+	}
+	return unlockCount * models.DramaUnlockCost, nil
+}
+
+// GetAdminDramasWithRevenue returns dramas with revenue data for admin
+func (s *DramaService) GetAdminDramasWithRevenue(ctx context.Context, adminID string) ([]models.DramaPerformance, error) {
+	query := `
+		SELECT drama_id, title, array_length(episode_videos, 1) as total_episodes, 
+		       view_count, favorite_count, unlock_count, is_premium, created_at
+		FROM dramas 
+		WHERE created_by = $1 
+		ORDER BY created_at DESC`
+
+	rows, err := s.db.QueryContext(ctx, query, adminID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var performances []models.DramaPerformance
+	for rows.Next() {
+		var p models.DramaPerformance
+		var totalEpisodes *int
+
+		err := rows.Scan(
+			&p.DramaID, &p.Title, &totalEpisodes,
+			&p.ViewCount, &p.FavoriteCount, &p.UnlockCount,
+			&p.IsPremium, &p.CreatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		if totalEpisodes != nil {
+			p.TotalEpisodes = *totalEpisodes
+		}
+
+		// Calculate exact revenue from unlock count
+		p.Revenue = p.UnlockCount * models.DramaUnlockCost
+
+		// Calculate conversion rate (views to unlocks)
+		if p.ViewCount > 0 {
+			p.ConversionRate = (float64(p.UnlockCount) / float64(p.ViewCount)) * 100.0
+		}
+
+		performances = append(performances, p)
+	}
+
+	return performances, nil
+}
+
+// GetTotalAdminRevenue returns total revenue for all admin's dramas
+func (s *DramaService) GetTotalAdminRevenue(ctx context.Context, adminID string) (int, error) {
+	var totalUnlocks int
+	query := `
+		SELECT COALESCE(SUM(unlock_count), 0) 
+		FROM dramas 
+		WHERE created_by = $1 AND is_premium = true`
+
+	err := s.db.QueryRowContext(ctx, query, adminID).Scan(&totalUnlocks)
+	if err != nil {
+		return 0, err
+	}
+
+	return totalUnlocks * models.DramaUnlockCost, nil
 }
