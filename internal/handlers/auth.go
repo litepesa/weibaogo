@@ -1,5 +1,5 @@
 // ===============================
-// internal/handlers/auth.go - Updated to Use Firebase Service
+// internal/handlers/auth.go - Video Social Media Auth Handler
 // ===============================
 
 package handlers
@@ -68,7 +68,7 @@ func (h *AuthHandler) GetCurrentUser(c *gin.Context) {
 	// Get user from our database
 	db := database.GetDB()
 	var user models.User
-	err := db.Get(&user, "SELECT * FROM users WHERE uid = $1", userID)
+	err := db.Get(&user, "SELECT * FROM users WHERE uid = $1 AND is_active = true", userID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found in database"})
 		return
@@ -130,31 +130,34 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 		newUser := models.User{
 			UID:            userID,
 			Name:           firebaseUser.DisplayName,
-			Email:          firebaseUser.Email,
 			PhoneNumber:    firebaseUser.PhoneNumber,
 			ProfileImage:   firebaseUser.PhotoURL,
-			UserType:       "viewer", // Default to viewer
-			FavoriteDramas: make(models.StringSlice, 0),
-			WatchHistory:   make(models.StringSlice, 0),
-			DramaProgress:  make(models.IntMap),
-			UnlockedDramas: make(models.StringSlice, 0),
-			Preferences: models.UserPreferences{
-				AutoPlay:             true,
-				ReceiveNotifications: true,
-				DarkMode:             false,
-			},
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
-			LastSeen:  time.Now(),
+			UserType:       "user", // Default to user
+			FollowersCount: 0,
+			FollowingCount: 0,
+			VideosCount:    0,
+			LikesCount:     0,
+			IsVerified:     false,
+			IsActive:       true,
+			IsFeatured:     false,
+			Tags:           make(models.StringSlice, 0),
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
+			LastSeen:       time.Now(),
+		}
+
+		// Ensure we have a name
+		if newUser.Name == "" {
+			newUser.Name = "User" // Default name
 		}
 
 		query := `
-			INSERT INTO users (uid, name, email, phone_number, profile_image, bio, user_type, 
-			                   favorite_dramas, watch_history, drama_progress, 
-			                   unlocked_dramas, preferences, created_at, updated_at, last_seen)
-			VALUES (:uid, :name, :email, :phone_number, :profile_image, :bio, :user_type, 
-			        :favorite_dramas, :watch_history, :drama_progress, 
-			        :unlocked_dramas, :preferences, :created_at, :updated_at, :last_seen)`
+			INSERT INTO users (uid, name, phone_number, profile_image, cover_image, bio, user_type, 
+			                   followers_count, following_count, videos_count, likes_count,
+			                   is_verified, is_active, is_featured, tags, created_at, updated_at, last_seen)
+			VALUES (:uid, :name, :phone_number, :profile_image, :cover_image, :bio, :user_type, 
+			        :followers_count, :following_count, :videos_count, :likes_count,
+			        :is_verified, :is_active, :is_featured, :tags, :created_at, :updated_at, :last_seen)`
 
 		_, err = db.NamedExec(query, newUser)
 		if err != nil {

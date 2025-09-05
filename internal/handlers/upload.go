@@ -76,10 +76,10 @@ func (h *UploadHandler) UploadFile(c *gin.Context) {
 
 	// Enhanced file size validation with better error messages
 	maxSizes := map[string]int64{
-		"banner":    10 * 1024 * 1024,   // 10MB (increased for better quality)
-		"thumbnail": 5 * 1024 * 1024,    // 5MB
-		"profile":   5 * 1024 * 1024,    // 5MB
-		"video":     1024 * 1024 * 1024, // 1GB (increased for TS files and longer episodes)
+		"banner":    10 * 1024 * 1024, // 10MB (increased for better quality)
+		"thumbnail": 5 * 1024 * 1024,  // 5MB
+		"profile":   5 * 1024 * 1024,  // 5MB
+		"video":     50 * 1024 * 1024, // 50MB
 	}
 
 	if maxSize, exists := maxSizes[fileType]; exists {

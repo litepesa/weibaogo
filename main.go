@@ -1,11 +1,11 @@
 // ===============================
-// main.go - Updated Entry Point for Unified Architecture
+// main.go - Video Social Media App Entry Point
 // ===============================
 
 package main
 
 import (
-	"fmt"
+	//"fmt"
 	"log"
 
 	"weibaobe/internal/config"
@@ -35,14 +35,14 @@ func main() {
 	// Set Gin mode
 	gin.SetMode(cfg.Environment)
 
-	// Initialize database with new config structure
+	// Initialize database
 	db, err := database.Connect(cfg.Database.ConnectionString())
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
 	}
 	defer database.Close()
 
-	// Run migrations if needed
+	// Run migrations
 	if err := database.RunMigrations(db); err != nil {
 		log.Fatal("Failed to run migrations:", err)
 	}
@@ -60,14 +60,14 @@ func main() {
 	}
 
 	// Initialize services
-	dramaService := services.NewDramaService(db, r2Client)
+	videoService := services.NewVideoService(db, r2Client)
 	walletService := services.NewWalletService(db)
 	uploadService := services.NewUploadService(r2Client)
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(firebaseService)
 	userHandler := handlers.NewUserHandler(db)
-	dramaHandler := handlers.NewDramaHandler(dramaService)
+	videoHandler := handlers.NewVideoHandler(videoService)
 	walletHandler := handlers.NewWalletHandler(walletService)
 	uploadHandler := handlers.NewUploadHandler(uploadService)
 
@@ -89,34 +89,33 @@ func main() {
 		c.JSON(200, gin.H{
 			"status":   "healthy",
 			"database": database.Health() == nil,
+			"app":      "video-social-media",
 		})
 	})
 
-	// API routes - UNIFIED ARCHITECTURE (NO EPISODE HANDLER)
-	// FIXED: Pass dramaService as parameter
-	setupUnifiedRoutes(router, firebaseService, authHandler, userHandler, dramaHandler, walletHandler, uploadHandler, dramaService)
+	// Setup video social media routes
+	setupVideoSocialMediaRoutes(router, firebaseService, authHandler, userHandler, videoHandler, walletHandler, uploadHandler)
 
 	// Start server
 	port := cfg.Port
-	log.Printf("🚀 Server starting on port %s", port)
-	log.Printf("🌐 Environment: %s", cfg.Environment)
+	log.Printf("🚀 Video Social Media Server starting on port %s", port)
+	log.Printf("🌍 Environment: %s", cfg.Environment)
 	log.Printf("💾 Database connected to %s:%s", cfg.Database.Host, cfg.Database.Port)
 	log.Printf("🔥 Firebase service initialized")
 	log.Printf("☁️  R2 storage initialized")
-	log.Printf("🎭 Unified Drama Architecture enabled")
+	log.Printf("📱 Video Social Media API ready")
 
 	log.Fatal(router.Run(":" + port))
 }
 
-func setupUnifiedRoutes(
+func setupVideoSocialMediaRoutes(
 	router *gin.Engine,
 	firebaseService *services.FirebaseService,
 	authHandler *handlers.AuthHandler,
 	userHandler *handlers.UserHandler,
-	dramaHandler *handlers.DramaHandler,
+	videoHandler *handlers.VideoHandler,
 	walletHandler *handlers.WalletHandler,
 	uploadHandler *handlers.UploadHandler,
-	dramaService *services.DramaService, // ADDED: dramaService parameter
 ) {
 	api := router.Group("/api/v1")
 
@@ -131,84 +130,56 @@ func setupUnifiedRoutes(
 	// Public routes (no auth required)
 	public := api.Group("")
 	{
-		// Drama discovery (public)
-		public.GET("/dramas", dramaHandler.GetDramas)
-		public.GET("/dramas/featured", dramaHandler.GetFeaturedDramas)
-		public.GET("/dramas/trending", dramaHandler.GetTrendingDramas)
-		public.GET("/dramas/search", dramaHandler.SearchDramas)
-		public.GET("/dramas/:dramaId", dramaHandler.GetDrama)
+		// Video discovery (public)
+		public.GET("/videos", videoHandler.GetVideos)
+		public.GET("/videos/featured", videoHandler.GetFeaturedVideos)
+		public.GET("/videos/trending", videoHandler.GetTrendingVideos)
+		public.GET("/videos/:videoId", videoHandler.GetVideo)
+		public.POST("/videos/:videoId/views", videoHandler.IncrementViews)
+		public.GET("/users/:userId/videos", videoHandler.GetUserVideos)
 
-		// Episode-like endpoints (compatibility) - return drama episodes
-		public.GET("/dramas/:dramaId/episodes", func(c *gin.Context) {
-			dramaID := c.Param("dramaId")
-			if dramaID == "" {
-				c.JSON(400, gin.H{"error": "Drama ID required"})
-				return
-			}
+		// Comment endpoints (public read)
+		public.GET("/videos/:videoId/comments", videoHandler.GetVideoComments)
 
-			// FIXED: Use dramaService parameter directly instead of c.MustGet
-			episodes, err := dramaService.GetDramaEpisodes(c.Request.Context(), dramaID)
-			if err != nil {
-				c.JSON(404, gin.H{"error": "Drama not found"})
-				return
-			}
-
-			c.JSON(200, episodes)
-		})
-
-		// Individual episode endpoint (compatibility)
-		public.GET("/episodes/:dramaId/:episodeNumber", func(c *gin.Context) {
-			dramaID := c.Param("dramaId")
-			episodeNumber := c.Param("episodeNumber")
-
-			if dramaID == "" || episodeNumber == "" {
-				c.JSON(400, gin.H{"error": "Drama ID and episode number required"})
-				return
-			}
-
-			// Parse episode number
-			var epNum int
-			if _, err := fmt.Sscanf(episodeNumber, "%d", &epNum); err != nil {
-				c.JSON(400, gin.H{"error": "Invalid episode number"})
-				return
-			}
-
-			// FIXED: Use dramaService parameter directly instead of c.MustGet
-			episode, err := dramaService.GetEpisodeByNumber(c.Request.Context(), dramaID, epNum)
-			if err != nil {
-				c.JSON(404, gin.H{"error": "Episode not found"})
-				return
-			}
-
-			c.JSON(200, episode)
-		})
+		// User profiles (public) - Using :userId to be consistent
+		public.GET("/users/:userId", userHandler.GetUser)
+		public.GET("/users/:userId/followers", videoHandler.GetUserFollowers)
+		public.GET("/users/:userId/following", videoHandler.GetUserFollowing)
 	}
 
 	// Protected routes (Firebase auth required)
 	protected := api.Group("")
 	protected.Use(middleware.FirebaseAuth(firebaseService))
 	{
-		// REMOVED: The problematic middleware that was trying to set dramaService in context
-
-		// User management
+		// User management - Using :userId for consistency
 		protected.POST("/users", userHandler.CreateUser)
-		protected.GET("/users/:uid", userHandler.GetUser)
-		protected.PUT("/users/:uid", userHandler.UpdateUser)
-		protected.DELETE("/users/:uid", userHandler.DeleteUser)
+		protected.PUT("/users/:userId", userHandler.UpdateUser)
+		protected.DELETE("/users/:userId", userHandler.DeleteUser)
 
-		// User actions
-		protected.POST("/users/:uid/favorites", userHandler.ToggleFavorite)
-		protected.POST("/users/:uid/watch-history", userHandler.AddToWatchHistory)
-		protected.POST("/users/:uid/drama-progress", userHandler.UpdateDramaProgress)
-		protected.GET("/users/:uid/favorites", userHandler.GetFavorites)
-		protected.GET("/users/:uid/continue-watching", userHandler.GetContinueWatching)
+		// Video creation and management
+		protected.POST("/videos", videoHandler.CreateVideo)
+		protected.PUT("/videos/:videoId", videoHandler.UpdateVideo)
+		protected.DELETE("/videos/:videoId", videoHandler.DeleteVideo)
 
-		// Drama interactions
-		protected.POST("/dramas/:dramaId/views", dramaHandler.IncrementViews)
-		protected.POST("/dramas/:dramaId/favorites", dramaHandler.ToggleFavorite)
+		// Video interactions
+		protected.POST("/videos/:videoId/like", videoHandler.LikeVideo)
+		protected.DELETE("/videos/:videoId/like", videoHandler.UnlikeVideo)
+		protected.POST("/videos/:videoId/share", videoHandler.ShareVideo)
+		protected.GET("/users/:userId/liked-videos", videoHandler.GetUserLikedVideos)
 
-		// Drama unlock
-		protected.POST("/unlock-drama", dramaHandler.UnlockDrama)
+		// Social features
+		protected.POST("/users/:userId/follow", videoHandler.FollowUser)
+		protected.DELETE("/users/:userId/follow", videoHandler.UnfollowUser)
+		protected.GET("/feed/following", videoHandler.GetFollowingFeed)
+
+		// Comments
+		protected.POST("/videos/:videoId/comments", videoHandler.CreateComment)
+		protected.DELETE("/comments/:commentId", videoHandler.DeleteComment)
+		protected.POST("/comments/:commentId/like", videoHandler.LikeComment)
+		protected.DELETE("/comments/:commentId/like", videoHandler.UnlikeComment)
+
+		// User stats and analytics
+		protected.GET("/stats/videos", videoHandler.GetVideoStats)
 
 		// Wallet
 		protected.GET("/wallet/:userId", walletHandler.GetWallet)
@@ -217,18 +188,18 @@ func setupUnifiedRoutes(
 
 		// File upload
 		protected.POST("/upload", uploadHandler.UploadFile)
+		protected.POST("/upload/batch", uploadHandler.BatchUploadFiles)
 
 		// Admin routes
 		admin := protected.Group("")
 		admin.Use(middleware.AdminOnly())
 		{
-			// Unified drama management
-			admin.POST("/admin/dramas/create-with-episodes", dramaHandler.CreateDramaWithEpisodes)
-			admin.PUT("/admin/dramas/:dramaId", dramaHandler.UpdateDrama)
-			admin.DELETE("/admin/dramas/:dramaId", dramaHandler.DeleteDrama)
-			admin.POST("/admin/dramas/:dramaId/featured", dramaHandler.ToggleFeatured)
-			admin.POST("/admin/dramas/:dramaId/active", dramaHandler.ToggleActive)
-			admin.GET("/admin/dramas", dramaHandler.GetAdminDramas)
+			// Video moderation
+			admin.POST("/admin/videos/:videoId/featured", videoHandler.ToggleFeatured)
+			admin.POST("/admin/videos/:videoId/active", videoHandler.ToggleActive)
+
+			// User management
+			admin.GET("/admin/users", userHandler.GetAllUsers)
 
 			// Wallet management
 			admin.POST("/admin/wallet/:userId/add-coins", walletHandler.AddCoins)
@@ -238,13 +209,12 @@ func setupUnifiedRoutes(
 
 			// Analytics
 			admin.GET("/admin/stats", func(c *gin.Context) {
-				// Simplified stats endpoint
+				// Get overall platform statistics
 				c.JSON(200, gin.H{
-					"message": "Stats endpoint - implement based on your needs",
-					"note":    "Drama-centric analytics only",
+					"message": "Platform stats endpoint",
+					"note":    "Video social media analytics",
 				})
 			})
-			admin.GET("/admin/users", userHandler.GetAllUsers)
 		}
 	}
 }

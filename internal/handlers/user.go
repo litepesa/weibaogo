@@ -1,12 +1,14 @@
 // ===============================
-// internal/handlers/user.go - Minimal Update (Only Remove Balance from Queries)
+// internal/handlers/user.go - Video Social Media User Handler
 // ===============================
 
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"weibaobe/internal/models"
@@ -36,34 +38,31 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 
 	// Ensure default values
 	if user.UserType == "" {
-		user.UserType = "viewer"
+		user.UserType = "user"
 	}
-	if user.FavoriteDramas == nil {
-		user.FavoriteDramas = make(models.StringSlice, 0)
-	}
-	if user.WatchHistory == nil {
-		user.WatchHistory = make(models.StringSlice, 0)
-	}
-	if user.DramaProgress == nil {
-		user.DramaProgress = make(models.IntMap)
-	}
-	if user.UnlockedDramas == nil {
-		user.UnlockedDramas = make(models.StringSlice, 0)
+	if user.Tags == nil {
+		user.Tags = make(models.StringSlice, 0)
 	}
 
-	// UPDATED: Removed coins_balance from INSERT query
+	// Validate user
+	if !user.IsValidForCreation() {
+		errors := user.ValidateForCreation()
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Validation failed", "details": errors})
+		return
+	}
+
 	query := `
-		INSERT INTO users (uid, name, email, phone_number, profile_image, bio, user_type, 
-		                   favorite_dramas, watch_history, drama_progress, 
-		                   unlocked_dramas, preferences, created_at, updated_at, last_seen)
-		VALUES (:uid, :name, :email, :phone_number, :profile_image, :bio, :user_type, 
-		        :favorite_dramas, :watch_history, :drama_progress, 
-		        :unlocked_dramas, :preferences, :created_at, :updated_at, :last_seen)
+		INSERT INTO users (uid, name, phone_number, profile_image, cover_image, bio, user_type, 
+		                   followers_count, following_count, videos_count, likes_count,
+		                   is_verified, is_active, is_featured, tags, created_at, updated_at, last_seen)
+		VALUES (:uid, :name, :phone_number, :profile_image, :cover_image, :bio, :user_type, 
+		        :followers_count, :following_count, :videos_count, :likes_count,
+		        :is_verified, :is_active, :is_featured, :tags, :created_at, :updated_at, :last_seen)
 		ON CONFLICT (uid) DO UPDATE SET
 		name = EXCLUDED.name,
-		email = EXCLUDED.email,
 		phone_number = EXCLUDED.phone_number,
 		profile_image = EXCLUDED.profile_image,
+		cover_image = EXCLUDED.cover_image,
 		bio = EXCLUDED.bio,
 		updated_at = EXCLUDED.updated_at,
 		last_seen = EXCLUDED.last_seen`
@@ -88,7 +87,7 @@ func (h *UserHandler) GetUser(c *gin.Context) {
 	}
 
 	var user models.User
-	query := `SELECT * FROM users WHERE uid = $1`
+	query := `SELECT * FROM users WHERE uid = $1 AND is_active = true`
 	err := h.db.Get(&user, query, userID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
@@ -127,19 +126,14 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 	user.UpdatedAt = time.Now()
 	user.LastSeen = time.Now()
 
-	// UPDATED: Removed coins_balance from UPDATE query
 	query := `
 		UPDATE users SET 
 			name = :name, 
-			email = :email, 
 			phone_number = :phone_number, 
 			profile_image = :profile_image,
+			cover_image = :cover_image,
 			bio = :bio, 
-			favorite_dramas = :favorite_dramas,
-			watch_history = :watch_history, 
-			drama_progress = :drama_progress, 
-			unlocked_dramas = :unlocked_dramas,
-			preferences = :preferences, 
+			tags = :tags,
 			updated_at = :updated_at, 
 			last_seen = :last_seen
 		WHERE uid = :uid`
@@ -180,6 +174,45 @@ func (h *UserHandler) DeleteUser(c *gin.Context) {
 	}
 	defer tx.Rollback()
 
+	// Delete user follows
+	_, err = tx.Exec("DELETE FROM user_follows WHERE follower_id = $1 OR following_id = $1", userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete user follows"})
+		return
+	}
+
+	// Delete comment likes
+	_, err = tx.Exec(`
+		DELETE FROM comment_likes 
+		WHERE user_id = $1 OR comment_id IN (
+			SELECT id FROM comments WHERE author_id = $1
+		)`, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete comment likes"})
+		return
+	}
+
+	// Delete video likes
+	_, err = tx.Exec("DELETE FROM video_likes WHERE user_id = $1", userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete video likes"})
+		return
+	}
+
+	// Delete comments
+	_, err = tx.Exec("DELETE FROM comments WHERE author_id = $1", userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete comments"})
+		return
+	}
+
+	// Delete videos
+	_, err = tx.Exec("DELETE FROM videos WHERE user_id = $1", userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete videos"})
+		return
+	}
+
 	// Delete wallet transactions
 	_, err = tx.Exec("DELETE FROM wallet_transactions WHERE user_id = $1", userID)
 	if err != nil {
@@ -216,251 +249,6 @@ func (h *UserHandler) DeleteUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "User deleted successfully"})
 }
 
-func (h *UserHandler) ToggleFavorite(c *gin.Context) {
-	userID := c.Param("uid")
-
-	// Verify user can only update their own favorites
-	requestingUserID := c.GetString("userID")
-	if requestingUserID != userID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
-		return
-	}
-
-	var request struct {
-		DramaID string `json:"dramaId" binding:"required"`
-		Action  string `json:"action" binding:"required"` // "add" or "remove"
-	}
-
-	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	var user models.User
-	err := h.db.Get(&user, "SELECT favorite_dramas FROM users WHERE uid = $1", userID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-
-	favorites := []string(user.FavoriteDramas)
-
-	if request.Action == "add" {
-		// Add to favorites if not already there
-		found := false
-		for _, id := range favorites {
-			if id == request.DramaID {
-				found = true
-				break
-			}
-		}
-		if !found {
-			favorites = append(favorites, request.DramaID)
-		}
-	} else if request.Action == "remove" {
-		// Remove from favorites
-		for i, id := range favorites {
-			if id == request.DramaID {
-				favorites = append(favorites[:i], favorites[i+1:]...)
-				break
-			}
-		}
-	}
-
-	// Update user favorites
-	user.FavoriteDramas = models.StringSlice(favorites)
-	user.UpdatedAt = time.Now()
-
-	_, err = h.db.Exec("UPDATE users SET favorite_dramas = $1, updated_at = $2 WHERE uid = $3",
-		user.FavoriteDramas, user.UpdatedAt, userID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update favorites"})
-		return
-	}
-
-	// Update drama favorite count
-	if request.Action == "add" {
-		h.db.Exec("UPDATE dramas SET favorite_count = favorite_count + 1 WHERE drama_id = $1", request.DramaID)
-	} else {
-		h.db.Exec("UPDATE dramas SET favorite_count = favorite_count - 1 WHERE drama_id = $1 AND favorite_count > 0", request.DramaID)
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Favorites updated successfully"})
-}
-
-func (h *UserHandler) AddToWatchHistory(c *gin.Context) {
-	userID := c.Param("uid")
-
-	// Verify user can only update their own watch history
-	requestingUserID := c.GetString("userID")
-	if requestingUserID != userID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
-		return
-	}
-
-	var request struct {
-		EpisodeID string `json:"episodeId" binding:"required"`
-	}
-
-	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	var user models.User
-	err := h.db.Get(&user, "SELECT watch_history FROM users WHERE uid = $1", userID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-
-	history := []string(user.WatchHistory)
-
-	// Add to history if not already there
-	found := false
-	for _, id := range history {
-		if id == request.EpisodeID {
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		history = append(history, request.EpisodeID)
-
-		// Limit history to last 1000 episodes
-		if len(history) > 1000 {
-			history = history[len(history)-1000:]
-		}
-
-		user.WatchHistory = models.StringSlice(history)
-		user.UpdatedAt = time.Now()
-
-		_, err = h.db.Exec("UPDATE users SET watch_history = $1, updated_at = $2 WHERE uid = $3",
-			user.WatchHistory, user.UpdatedAt, userID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update watch history"})
-			return
-		}
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Watch history updated successfully"})
-}
-
-func (h *UserHandler) UpdateDramaProgress(c *gin.Context) {
-	userID := c.Param("uid")
-
-	// Verify user can only update their own progress
-	requestingUserID := c.GetString("userID")
-	if requestingUserID != userID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
-		return
-	}
-
-	var request struct {
-		DramaID       string `json:"dramaId" binding:"required"`
-		EpisodeNumber int    `json:"episodeNumber" binding:"required"`
-	}
-
-	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	var user models.User
-	err := h.db.Get(&user, "SELECT drama_progress FROM users WHERE uid = $1", userID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-
-	progress := map[string]int(user.DramaProgress)
-	if progress == nil {
-		progress = make(map[string]int)
-	}
-
-	// Update progress only if new episode number is higher
-	if currentProgress, exists := progress[request.DramaID]; !exists || request.EpisodeNumber > currentProgress {
-		progress[request.DramaID] = request.EpisodeNumber
-
-		user.DramaProgress = models.IntMap(progress)
-		user.UpdatedAt = time.Now()
-
-		_, err = h.db.Exec("UPDATE users SET drama_progress = $1, updated_at = $2 WHERE uid = $3",
-			user.DramaProgress, user.UpdatedAt, userID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update drama progress"})
-			return
-		}
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Drama progress updated successfully"})
-}
-
-func (h *UserHandler) GetFavorites(c *gin.Context) {
-	userID := c.Param("uid")
-
-	// Users can only view their own favorites unless admin
-	requestingUserID := c.GetString("userID")
-	if requestingUserID != userID {
-		var requestingUser models.User
-		err := h.db.Get(&requestingUser, "SELECT user_type FROM users WHERE uid = $1", requestingUserID)
-		if err != nil || !requestingUser.IsAdmin() {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
-			return
-		}
-	}
-
-	query := `
-		SELECT d.* FROM dramas d
-		JOIN users u ON u.uid = $1
-		WHERE d.drama_id = ANY(
-			SELECT jsonb_array_elements_text(u.favorite_dramas)
-		) AND d.is_active = true
-		ORDER BY d.created_at DESC`
-
-	var dramas []models.Drama
-	err := h.db.Select(&dramas, query, userID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch favorites"})
-		return
-	}
-
-	c.JSON(http.StatusOK, dramas)
-}
-
-func (h *UserHandler) GetContinueWatching(c *gin.Context) {
-	userID := c.Param("uid")
-
-	// Users can only view their own continue watching unless admin
-	requestingUserID := c.GetString("userID")
-	if requestingUserID != userID {
-		var requestingUser models.User
-		err := h.db.Get(&requestingUser, "SELECT user_type FROM users WHERE uid = $1", requestingUserID)
-		if err != nil || !requestingUser.IsAdmin() {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
-			return
-		}
-	}
-
-	query := `
-		SELECT d.* FROM dramas d
-		JOIN users u ON u.uid = $1
-		WHERE d.drama_id IN (
-			SELECT key FROM jsonb_each_text(u.drama_progress)
-		) AND d.is_active = true
-		ORDER BY d.updated_at DESC`
-
-	var dramas []models.Drama
-	err := h.db.Select(&dramas, query, userID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch continue watching"})
-		return
-	}
-
-	c.JSON(http.StatusOK, dramas)
-}
-
 func (h *UserHandler) GetAllUsers(c *gin.Context) {
 	limit := 50
 	if l := c.Query("limit"); l != "" {
@@ -476,13 +264,211 @@ func (h *UserHandler) GetAllUsers(c *gin.Context) {
 		}
 	}
 
+	// Optional filters
+	var whereClause string
+	var args []interface{}
+	argIndex := 1
+
+	whereClause = "WHERE is_active = true"
+
+	if userType := c.Query("userType"); userType != "" {
+		whereClause += fmt.Sprintf(" AND user_type = $%d", argIndex)
+		args = append(args, userType)
+		argIndex++
+	}
+
+	if verified := c.Query("verified"); verified != "" {
+		if verified == "true" {
+			whereClause += " AND is_verified = true"
+		} else if verified == "false" {
+			whereClause += " AND is_verified = false"
+		}
+	}
+
+	if query := c.Query("q"); query != "" {
+		whereClause += fmt.Sprintf(" AND (name ILIKE $%d OR phone_number ILIKE $%d)", argIndex, argIndex)
+		searchPattern := "%" + query + "%"
+		args = append(args, searchPattern)
+		argIndex++
+	}
+
+	// Add pagination
+	limitOffset := fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", argIndex, argIndex+1)
+	args = append(args, limit, offset)
+
 	var users []models.User
-	query := `SELECT * FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2`
-	err := h.db.Select(&users, query, limit, offset)
+	query := "SELECT * FROM users " + whereClause + limitOffset
+	err := h.db.Select(&users, query, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch users"})
 		return
 	}
 
-	c.JSON(http.StatusOK, users)
+	c.JSON(http.StatusOK, gin.H{
+		"users": users,
+		"total": len(users),
+	})
+}
+
+func (h *UserHandler) SearchUsers(c *gin.Context) {
+	query := c.Query("q")
+	if query == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Search query required"})
+		return
+	}
+
+	limit := 20
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 100 {
+			limit = parsed
+		}
+	}
+
+	searchPattern := "%" + query + "%"
+
+	var users []models.User
+	searchQuery := `
+		SELECT * FROM users 
+		WHERE is_active = true AND (
+			name ILIKE $1 OR 
+			phone_number ILIKE $1 OR
+			bio ILIKE $1
+		)
+		ORDER BY 
+			CASE WHEN name ILIKE $1 THEN 1 ELSE 2 END,
+			followers_count DESC,
+			created_at DESC 
+		LIMIT $2`
+
+	err := h.db.Select(&users, searchQuery, searchPattern, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to search users"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"users": users,
+		"total": len(users),
+		"query": query,
+	})
+}
+
+func (h *UserHandler) GetUserStats(c *gin.Context) {
+	userID := c.Param("uid")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "User ID required"})
+		return
+	}
+
+	// Get user with basic stats
+	var user models.User
+	err := h.db.Get(&user, "SELECT * FROM users WHERE uid = $1 AND is_active = true", userID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	// Get additional stats
+	var totalViews, totalLikes int
+	err = h.db.QueryRow(`
+		SELECT 
+			COALESCE(SUM(views_count), 0) as total_views,
+			COALESCE(SUM(likes_count), 0) as total_likes
+		FROM videos 
+		WHERE user_id = $1 AND is_active = true`, userID).Scan(&totalViews, &totalLikes)
+	if err != nil {
+		totalViews = 0
+		totalLikes = 0
+	}
+
+	stats := gin.H{
+		"user":           user,
+		"totalViews":     totalViews,
+		"totalLikes":     totalLikes,
+		"videosCount":    user.VideosCount,
+		"followersCount": user.FollowersCount,
+		"followingCount": user.FollowingCount,
+		"engagementRate": user.GetEngagementRate(),
+		"joinDate":       user.CreatedAt,
+		"lastActiveDate": user.LastSeen,
+	}
+
+	c.JSON(http.StatusOK, stats)
+}
+
+func (h *UserHandler) UpdateUserStatus(c *gin.Context) {
+	userID := c.Param("uid")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "User ID required"})
+		return
+	}
+
+	var request struct {
+		IsActive   *bool  `json:"isActive"`
+		IsVerified *bool  `json:"isVerified"`
+		IsFeatured *bool  `json:"isFeatured"`
+		UserType   string `json:"userType"`
+	}
+
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Build dynamic update query
+	setParts := []string{"updated_at = $1"}
+	args := []interface{}{time.Now()}
+	argIndex := 2
+
+	if request.IsActive != nil {
+		setParts = append(setParts, fmt.Sprintf("is_active = $%d", argIndex))
+		args = append(args, *request.IsActive)
+		argIndex++
+	}
+
+	if request.IsVerified != nil {
+		setParts = append(setParts, fmt.Sprintf("is_verified = $%d", argIndex))
+		args = append(args, *request.IsVerified)
+		argIndex++
+	}
+
+	if request.IsFeatured != nil {
+		setParts = append(setParts, fmt.Sprintf("is_featured = $%d", argIndex))
+		args = append(args, *request.IsFeatured)
+		argIndex++
+	}
+
+	if request.UserType != "" {
+		setParts = append(setParts, fmt.Sprintf("user_type = $%d", argIndex))
+		args = append(args, request.UserType)
+		argIndex++
+	}
+
+	if len(setParts) == 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No fields to update"})
+		return
+	}
+
+	query := fmt.Sprintf("UPDATE users SET %s WHERE uid = $%d",
+		strings.Join(setParts, ", "), argIndex)
+	args = append(args, userID)
+
+	result, err := h.db.Exec(query, args...)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update user status"})
+		return
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check update result"})
+		return
+	}
+
+	if rowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "User status updated successfully"})
 }
