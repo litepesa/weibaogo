@@ -1,5 +1,5 @@
 // ===============================
-// internal/handlers/auth.go - Video Social Media Auth Handler
+// internal/handlers/auth.go - Video Social Media Auth Handler (Updated with Sync)
 // ===============================
 
 package handlers
@@ -12,6 +12,7 @@ import (
 	"weibaobe/internal/models"
 	"weibaobe/internal/services"
 
+	"firebase.google.com/go/v4/auth"
 	"github.com/gin-gonic/gin"
 )
 
@@ -105,8 +106,178 @@ func (h *AuthHandler) RequireAdmin(c *gin.Context) {
 	c.Next()
 }
 
-// Sync Firebase user with our database
+// NEW: SyncUser handles the user sync after Firebase authentication (NO AUTH MIDDLEWARE REQUIRED)
+// This endpoint solves the chicken-and-egg problem by creating users without requiring backend auth
 func (h *AuthHandler) SyncUser(c *gin.Context) {
+	// Get user data from request body (sent from frontend after Firebase auth)
+	var requestData struct {
+		UID          string `json:"uid" binding:"required"`
+		Name         string `json:"name"`
+		Email        string `json:"email"`
+		PhoneNumber  string `json:"phoneNumber"`
+		ProfileImage string `json:"profileImage"`
+		Bio          string `json:"bio"`
+	}
+
+	if err := c.ShouldBindJSON(&requestData); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request data"})
+		return
+	}
+
+	// Validate that we have a UID
+	if requestData.UID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "UID is required"})
+		return
+	}
+
+	// Check if user exists in our database
+	db := database.GetDB()
+	var existingUser models.User
+	err := db.Get(&existingUser, "SELECT * FROM users WHERE uid = $1", requestData.UID)
+
+	if err != nil {
+		// User doesn't exist, create new user with minimal data
+		newUser := models.User{
+			UID:            requestData.UID,
+			Name:           getValidName(requestData.Name),
+			PhoneNumber:    requestData.PhoneNumber,
+			ProfileImage:   requestData.ProfileImage,
+			Bio:            getValidBio(requestData.Bio),
+			UserType:       "user", // Default to user
+			FollowersCount: 0,
+			FollowingCount: 0,
+			VideosCount:    0,
+			LikesCount:     0,
+			IsVerified:     false,
+			IsActive:       true,
+			IsFeatured:     false,
+			Tags:           make(models.StringSlice, 0),
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
+			LastSeen:       time.Now(),
+		}
+
+		query := `
+			INSERT INTO users (uid, name, phone_number, profile_image, cover_image, bio, email, user_type, 
+			                   followers_count, following_count, videos_count, likes_count,
+			                   is_verified, is_active, is_featured, tags, created_at, updated_at, last_seen)
+			VALUES (:uid, :name, :phone_number, :profile_image, :cover_image, :bio, :email, :user_type, 
+			        :followers_count, :following_count, :videos_count, :likes_count,
+			        :is_verified, :is_active, :is_featured, :tags, :created_at, :updated_at, :last_seen)`
+
+		_, err = db.NamedExec(query, newUser)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
+			return
+		}
+
+		c.JSON(http.StatusCreated, gin.H{
+			"message": "User created successfully",
+			"user":    newUser,
+		})
+		return
+	}
+
+	// User exists, update last seen and return existing user
+	existingUser.LastSeen = time.Now()
+	existingUser.UpdatedAt = time.Now()
+
+	_, err = db.Exec("UPDATE users SET last_seen = $1, updated_at = $2 WHERE uid = $3",
+		existingUser.LastSeen, existingUser.UpdatedAt, requestData.UID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update user"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "User synced successfully",
+		"user":    existingUser,
+	})
+}
+
+// Alternative sync endpoint that uses Firebase token for validation
+// This is for cases where you want to verify the Firebase token before syncing
+func (h *AuthHandler) SyncUserWithToken(c *gin.Context) {
+	userID := c.GetString("userID")
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	// Get Firebase user record using the service
+	firebaseUser, err := h.firebaseService.GetUser(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get Firebase user"})
+		return
+	}
+
+	// Check if user exists in our database
+	db := database.GetDB()
+	var existingUser models.User
+	err = db.Get(&existingUser, "SELECT * FROM users WHERE uid = $1", userID)
+
+	if err != nil {
+		// User doesn't exist, create new user with Firebase data
+		newUser := models.User{
+			UID:            userID,
+			Name:           getFirebaseDisplayName(firebaseUser),
+			PhoneNumber:    firebaseUser.PhoneNumber,
+			ProfileImage:   getFirebasePhotoURL(firebaseUser),
+			UserType:       "user", // Default to user
+			FollowersCount: 0,
+			FollowingCount: 0,
+			VideosCount:    0,
+			LikesCount:     0,
+			IsVerified:     false,
+			IsActive:       true,
+			IsFeatured:     false,
+			Tags:           make(models.StringSlice, 0),
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
+			LastSeen:       time.Now(),
+		}
+
+		query := `
+			INSERT INTO users (uid, name, phone_number, profile_image, cover_image, bio, email, user_type, 
+			                   followers_count, following_count, videos_count, likes_count,
+			                   is_verified, is_active, is_featured, tags, created_at, updated_at, last_seen)
+			VALUES (:uid, :name, :phone_number, :profile_image, :cover_image, :bio, :email, :user_type, 
+			        :followers_count, :following_count, :videos_count, :likes_count,
+			        :is_verified, :is_active, :is_featured, :tags, :created_at, :updated_at, :last_seen)`
+
+		_, err = db.NamedExec(query, newUser)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
+			return
+		}
+
+		c.JSON(http.StatusCreated, gin.H{
+			"message": "User created successfully",
+			"user":    newUser,
+		})
+		return
+	}
+
+	// User exists, update last seen
+	existingUser.LastSeen = time.Now()
+	existingUser.UpdatedAt = time.Now()
+
+	_, err = db.Exec("UPDATE users SET last_seen = $1, updated_at = $2 WHERE uid = $3",
+		existingUser.LastSeen, existingUser.UpdatedAt, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update user"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "User synced successfully",
+		"user":    existingUser,
+	})
+}
+
+// Legacy method: Sync Firebase user with our backend database
+// This method uses the authenticated middleware and queries Firebase directly
+func (h *AuthHandler) SyncUserLegacy(c *gin.Context) {
 	userID := c.GetString("userID")
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
@@ -129,9 +300,9 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 		// User doesn't exist, create new user
 		newUser := models.User{
 			UID:            userID,
-			Name:           firebaseUser.DisplayName,
+			Name:           getFirebaseDisplayName(firebaseUser),
 			PhoneNumber:    firebaseUser.PhoneNumber,
-			ProfileImage:   firebaseUser.PhotoURL,
+			ProfileImage:   getFirebasePhotoURL(firebaseUser),
 			UserType:       "user", // Default to user
 			FollowersCount: 0,
 			FollowingCount: 0,
@@ -152,10 +323,10 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 		}
 
 		query := `
-			INSERT INTO users (uid, name, phone_number, profile_image, cover_image, bio, user_type, 
+			INSERT INTO users (uid, name, phone_number, profile_image, cover_image, bio, email, user_type, 
 			                   followers_count, following_count, videos_count, likes_count,
 			                   is_verified, is_active, is_featured, tags, created_at, updated_at, last_seen)
-			VALUES (:uid, :name, :phone_number, :profile_image, :cover_image, :bio, :user_type, 
+			VALUES (:uid, :name, :phone_number, :profile_image, :cover_image, :bio, :email, :user_type, 
 			        :followers_count, :following_count, :videos_count, :likes_count,
 			        :is_verified, :is_active, :is_featured, :tags, :created_at, :updated_at, :last_seen)`
 
@@ -185,4 +356,35 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 		"message": "User synced successfully",
 		"user":    existingUser,
 	})
+}
+
+// Helper function to get valid display name
+func getValidName(name string) string {
+	if name != "" && len(name) >= 2 {
+		return name
+	}
+	return "User" // Default name if empty or too short
+}
+
+// Helper function to get valid bio
+func getValidBio(bio string) string {
+	if bio != "" {
+		return bio
+	}
+	return "" // Empty bio is fine, will be filled later
+}
+
+// Helper functions to safely extract Firebase user data
+func getFirebaseDisplayName(user *auth.UserRecord) string {
+	if user.DisplayName != "" {
+		return user.DisplayName
+	}
+	return "User" // Default name
+}
+
+func getFirebasePhotoURL(user *auth.UserRecord) string {
+	if user.PhotoURL != "" {
+		return user.PhotoURL
+	}
+	return "" // Empty string for no photo
 }

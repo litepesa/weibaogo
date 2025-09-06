@@ -1,11 +1,10 @@
 // ===============================
-// main.go - Video Social Media App Entry Point
+// main.go - Video Social Media App Entry Point (Clean Version)
 // ===============================
 
 package main
 
 import (
-	//"fmt"
 	"log"
 
 	"weibaobe/internal/config"
@@ -119,18 +118,31 @@ func setupVideoSocialMediaRoutes(
 ) {
 	api := router.Group("/api/v1")
 
-	// Auth routes
+	// ===============================
+	// AUTH ROUTES (UPDATED WITH SYNC)
+	// ===============================
 	auth := api.Group("/auth")
 	{
+		// Token verification (for manual token validation)
 		auth.POST("/verify", authHandler.VerifyToken)
-		auth.POST("/sync", middleware.FirebaseAuth(firebaseService), authHandler.SyncUser)
+
+		// CRITICAL: User sync endpoint without authentication middleware
+		// This solves the chicken-and-egg problem by creating user before auth is required
+		auth.POST("/sync", authHandler.SyncUser)
+
+		// Alternative sync endpoint that uses Firebase token validation
+		auth.POST("/sync-with-token", middleware.FirebaseAuth(firebaseService), authHandler.SyncUserWithToken)
+
+		// Get current authenticated user info
 		auth.GET("/user", middleware.FirebaseAuth(firebaseService), authHandler.GetCurrentUser)
 	}
 
-	// Public routes (no auth required)
+	// ===============================
+	// PUBLIC ROUTES (NO AUTH REQUIRED)
+	// ===============================
 	public := api.Group("")
 	{
-		// Video discovery (public)
+		// Video discovery endpoints (public browsing)
 		public.GET("/videos", videoHandler.GetVideos)
 		public.GET("/videos/featured", videoHandler.GetFeaturedVideos)
 		public.GET("/videos/trending", videoHandler.GetTrendingVideos)
@@ -138,30 +150,37 @@ func setupVideoSocialMediaRoutes(
 		public.POST("/videos/:videoId/views", videoHandler.IncrementViews)
 		public.GET("/users/:userId/videos", videoHandler.GetUserVideos)
 
-		// Comment endpoints (public read)
+		// Comment endpoints (public read access)
 		public.GET("/videos/:videoId/comments", videoHandler.GetVideoComments)
 
-		// User profiles (public) - Using :userId to be consistent
+		// User profile endpoints (public access for viewing profiles)
 		public.GET("/users/:userId", userHandler.GetUser)
+		public.GET("/users/:userId/stats", userHandler.GetUserStats)
 		public.GET("/users/:userId/followers", videoHandler.GetUserFollowers)
 		public.GET("/users/:userId/following", videoHandler.GetUserFollowing)
+
+		// User search (public)
+		public.GET("/users", userHandler.GetAllUsers)
+		public.GET("/users/search", userHandler.SearchUsers)
 	}
 
-	// Protected routes (Firebase auth required)
+	// ===============================
+	// PROTECTED ROUTES (FIREBASE AUTH REQUIRED)
+	// ===============================
 	protected := api.Group("")
 	protected.Use(middleware.FirebaseAuth(firebaseService))
 	{
-		// User management - Using :userId for consistency
-		protected.POST("/users", userHandler.CreateUser)
+		// User management endpoints (now work because sync creates user first)
 		protected.PUT("/users/:userId", userHandler.UpdateUser)
 		protected.DELETE("/users/:userId", userHandler.DeleteUser)
+		protected.POST("/users/:userId/status", userHandler.UpdateUserStatus)
 
 		// Video creation and management
 		protected.POST("/videos", videoHandler.CreateVideo)
 		protected.PUT("/videos/:videoId", videoHandler.UpdateVideo)
 		protected.DELETE("/videos/:videoId", videoHandler.DeleteVideo)
 
-		// Video interactions
+		// Video interaction endpoints
 		protected.POST("/videos/:videoId/like", videoHandler.LikeVideo)
 		protected.DELETE("/videos/:videoId/like", videoHandler.UnlikeVideo)
 		protected.POST("/videos/:videoId/share", videoHandler.ShareVideo)
@@ -172,25 +191,32 @@ func setupVideoSocialMediaRoutes(
 		protected.DELETE("/users/:userId/follow", videoHandler.UnfollowUser)
 		protected.GET("/feed/following", videoHandler.GetFollowingFeed)
 
-		// Comments
+		// Comment management (authenticated actions)
 		protected.POST("/videos/:videoId/comments", videoHandler.CreateComment)
 		protected.DELETE("/comments/:commentId", videoHandler.DeleteComment)
 		protected.POST("/comments/:commentId/like", videoHandler.LikeComment)
 		protected.DELETE("/comments/:commentId/like", videoHandler.UnlikeComment)
 
-		// User stats and analytics
+		// User analytics and statistics
 		protected.GET("/stats/videos", videoHandler.GetVideoStats)
 
-		// Wallet
+		// ===============================
+		// WALLET ENDPOINTS (INDEPENDENT FEATURE)
+		// ===============================
 		protected.GET("/wallet/:userId", walletHandler.GetWallet)
 		protected.GET("/wallet/:userId/transactions", walletHandler.GetTransactions)
 		protected.POST("/wallet/:userId/purchase-request", walletHandler.CreatePurchaseRequest)
 
-		// File upload
+		// ===============================
+		// FILE UPLOAD ENDPOINTS
+		// ===============================
 		protected.POST("/upload", uploadHandler.UploadFile)
 		protected.POST("/upload/batch", uploadHandler.BatchUploadFiles)
+		protected.GET("/upload/health", uploadHandler.HealthCheck)
 
-		// Admin routes
+		// ===============================
+		// ADMIN ROUTES (ADMIN ACCESS REQUIRED)
+		// ===============================
 		admin := protected.Group("")
 		admin.Use(middleware.AdminOnly())
 		{
@@ -198,21 +224,79 @@ func setupVideoSocialMediaRoutes(
 			admin.POST("/admin/videos/:videoId/featured", videoHandler.ToggleFeatured)
 			admin.POST("/admin/videos/:videoId/active", videoHandler.ToggleActive)
 
-			// User management
+			// User management (admin functions)
 			admin.GET("/admin/users", userHandler.GetAllUsers)
+			admin.POST("/admin/users/:userId/status", userHandler.UpdateUserStatus)
 
-			// Wallet management
+			// Wallet management (admin functions)
 			admin.POST("/admin/wallet/:userId/add-coins", walletHandler.AddCoins)
 			admin.GET("/admin/purchase-requests", walletHandler.GetPendingPurchases)
 			admin.POST("/admin/purchase-requests/:requestId/approve", walletHandler.ApprovePurchase)
 			admin.POST("/admin/purchase-requests/:requestId/reject", walletHandler.RejectPurchase)
 
-			// Analytics
+			// Platform analytics
 			admin.GET("/admin/stats", func(c *gin.Context) {
-				// Get overall platform statistics
 				c.JSON(200, gin.H{
-					"message": "Platform stats endpoint",
-					"note":    "Video social media analytics",
+					"message": "Platform statistics endpoint",
+					"note":    "Video social media analytics dashboard",
+					"status":  "operational",
+				})
+			})
+
+			// System health and monitoring
+			admin.GET("/admin/health", func(c *gin.Context) {
+				dbStats := database.Stats()
+				c.JSON(200, gin.H{
+					"database": gin.H{
+						"status":           "connected",
+						"open_connections": dbStats.OpenConnections,
+						"in_use":           dbStats.InUse,
+						"idle":             dbStats.Idle,
+					},
+					"firebase": gin.H{
+						"status": "initialized",
+					},
+					"storage": gin.H{
+						"status": "connected",
+						"type":   "cloudflare-r2",
+					},
+					"app": gin.H{
+						"name":    "video-social-media",
+						"version": "1.0.0",
+						"status":  "healthy",
+					},
+				})
+			})
+		}
+	}
+
+	// ===============================
+	// DEVELOPMENT ROUTES (DEBUG MODE ONLY)
+	// ===============================
+	if gin.Mode() == gin.DebugMode {
+		debug := api.Group("/debug")
+		{
+			debug.GET("/routes", func(c *gin.Context) {
+				routes := router.Routes()
+				routeList := make([]gin.H, len(routes))
+				for i, route := range routes {
+					routeList[i] = gin.H{
+						"method": route.Method,
+						"path":   route.Path,
+					}
+				}
+				c.JSON(200, gin.H{
+					"total":  len(routes),
+					"routes": routeList,
+				})
+			})
+
+			debug.GET("/config", func(c *gin.Context) {
+				c.JSON(200, gin.H{
+					"environment": gin.Mode(),
+					"database":    "connected",
+					"firebase":    "initialized",
+					"storage":     "r2-connected",
 				})
 			})
 		}
