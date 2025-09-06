@@ -1,5 +1,5 @@
 // ===============================
-// internal/models/video.go - Video Social Media Model
+// internal/models/video.go - Video Social Media Model (FIXED PostgreSQL Array Issue)
 // ===============================
 
 package models
@@ -8,21 +8,40 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
-// StringSlice represents a slice of strings that can be stored in PostgreSQL as JSON
+// StringSlice represents a slice of strings that can be stored in PostgreSQL as TEXT[]
 type StringSlice []string
 
-// Value implements driver.Valuer for database storage
+// 🔧 CRITICAL FIX: Value implements driver.Valuer for database storage
+// Fixed to generate PostgreSQL array format instead of JSON format
 func (s StringSlice) Value() (driver.Value, error) {
 	if s == nil {
 		return nil, nil
 	}
-	return json.Marshal(s)
+
+	// 🔧 FIXED: Generate PostgreSQL array literal format instead of JSON
+	if len(s) == 0 {
+		return "{}", nil // PostgreSQL empty array format
+	}
+
+	// Escape each string and wrap in quotes for PostgreSQL
+	escapedStrings := make([]string, len(s))
+	for i, str := range s {
+		// Escape quotes and backslashes for PostgreSQL
+		escaped := strings.ReplaceAll(str, `\`, `\\`)
+		escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+		escapedStrings[i] = `"` + escaped + `"`
+	}
+
+	// Create PostgreSQL array format: {"item1","item2","item3"}
+	return "{" + strings.Join(escapedStrings, ",") + "}", nil
 }
 
-// Scan implements sql.Scanner for database retrieval
+// 🔧 FIXED: Scan implements sql.Scanner for database retrieval
+// Enhanced to handle both PostgreSQL array format and JSON format
 func (s *StringSlice) Scan(value interface{}) error {
 	if value == nil {
 		*s = nil
@@ -34,7 +53,54 @@ func (s *StringSlice) Scan(value interface{}) error {
 		return fmt.Errorf("cannot scan %T into StringSlice", value)
 	}
 
-	return json.Unmarshal(bytes, s)
+	str := string(bytes)
+
+	// Handle empty cases
+	if str == "" || str == "{}" || str == "[]" {
+		*s = StringSlice{}
+		return nil
+	}
+
+	// 🔧 FIXED: Handle PostgreSQL array format: {item1,item2,item3}
+	if strings.HasPrefix(str, "{") && strings.HasSuffix(str, "}") {
+		// Remove braces
+		content := str[1 : len(str)-1]
+		if content == "" {
+			*s = StringSlice{}
+			return nil
+		}
+
+		// Split by comma and clean up quotes
+		items := strings.Split(content, ",")
+		result := make([]string, 0, len(items))
+
+		for _, item := range items {
+			// Trim spaces and quotes
+			cleaned := strings.TrimSpace(item)
+			if strings.HasPrefix(cleaned, `"`) && strings.HasSuffix(cleaned, `"`) {
+				cleaned = cleaned[1 : len(cleaned)-1]
+			}
+			// Unescape PostgreSQL escapes
+			cleaned = strings.ReplaceAll(cleaned, `\"`, `"`)
+			cleaned = strings.ReplaceAll(cleaned, `\\`, `\`)
+
+			if cleaned != "" {
+				result = append(result, cleaned)
+			}
+		}
+
+		*s = result
+		return nil
+	}
+
+	// Fallback: Try parsing as JSON (for backward compatibility)
+	var jsonSlice []string
+	if err := json.Unmarshal(bytes, &jsonSlice); err != nil {
+		return fmt.Errorf("cannot parse StringSlice from %s: %w", str, err)
+	}
+
+	*s = jsonSlice
+	return nil
 }
 
 // Video model for social media content
@@ -324,4 +390,60 @@ func CalculateTrendingScore(video *Video) float64 {
 	engagementScore := float64(video.LikesCount*2 + video.CommentsCount*3 + video.SharesCount*5 + video.ViewsCount)
 
 	return engagementScore * timeDecay
+}
+
+// 🔧 ADDITIONAL FIX: Helper functions for StringSlice operations
+func NewStringSlice(items ...string) StringSlice {
+	if len(items) == 0 {
+		return StringSlice{}
+	}
+	return StringSlice(items)
+}
+
+func (s StringSlice) Contains(item string) bool {
+	for _, v := range s {
+		if v == item {
+			return true
+		}
+	}
+	return false
+}
+
+func (s StringSlice) Add(item string) StringSlice {
+	if s.Contains(item) {
+		return s
+	}
+	return append(s, item)
+}
+
+func (s StringSlice) Remove(item string) StringSlice {
+	result := make(StringSlice, 0, len(s))
+	for _, v := range s {
+		if v != item {
+			result = append(result, v)
+		}
+	}
+	return result
+}
+
+func (s StringSlice) IsEmpty() bool {
+	return len(s) == 0
+}
+
+func (s StringSlice) Length() int {
+	return len(s)
+}
+
+// 🔧 DEBUG: Helper function to debug StringSlice formatting
+func (s StringSlice) DebugString() string {
+	return fmt.Sprintf("StringSlice(len=%d, items=%v, pgFormat=%s)",
+		len(s), []string(s), s.toPostgreSQLFormat())
+}
+
+func (s StringSlice) toPostgreSQLFormat() string {
+	value, _ := s.Value()
+	if value == nil {
+		return "NULL"
+	}
+	return fmt.Sprintf("%v", value)
 }

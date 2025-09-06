@@ -1,5 +1,5 @@
 // ===============================
-// main.go - Video Social Media App Entry Point (Clean Version)
+// main.go - Video Social Media App Entry Point (FIXED - Auth Chicken-and-Egg Problem Resolved)
 // ===============================
 
 package main
@@ -119,22 +119,34 @@ func setupVideoSocialMediaRoutes(
 	api := router.Group("/api/v1")
 
 	// ===============================
-	// AUTH ROUTES (UPDATED WITH SYNC)
+	// AUTH ROUTES (FIXED - Resolves Chicken-and-Egg Problem)
 	// ===============================
 	auth := api.Group("/auth")
 	{
-		// Token verification (for manual token validation)
-		auth.POST("/verify", authHandler.VerifyToken)
-
-		// CRITICAL: User sync endpoint without authentication middleware
-		// This solves the chicken-and-egg problem by creating user before auth is required
+		// 🔧 CRITICAL FIX: User sync endpoint WITHOUT authentication middleware
+		// This solves the chicken-and-egg problem by allowing user creation BEFORE auth check
+		// Flutter should ALWAYS use this endpoint for new user creation/sync
 		auth.POST("/sync", authHandler.SyncUser)
 
-		// Alternative sync endpoint that uses Firebase token validation
-		auth.POST("/sync-with-token", middleware.FirebaseAuth(firebaseService), authHandler.SyncUserWithToken)
+		// Token verification endpoint (for manual token validation)
+		auth.POST("/verify", authHandler.VerifyToken)
 
-		// Get current authenticated user info
-		auth.GET("/user", middleware.FirebaseAuth(firebaseService), authHandler.GetCurrentUser)
+		// 🗑️ REMOVED: The problematic protected sync endpoint that caused the chicken-and-egg issue
+		// OLD: auth.POST("/sync-with-token", middleware.FirebaseAuth(firebaseService), authHandler.SyncUserWithToken)
+		// This endpoint required user to exist in DB before they could be created - impossible!
+	}
+
+	// ===============================
+	// PROTECTED AUTH ROUTES (Require existing user in database)
+	// ===============================
+	protectedAuth := api.Group("/auth")
+	protectedAuth.Use(middleware.FirebaseAuth(firebaseService))
+	{
+		// Get current authenticated user info (requires user to exist in DB)
+		protectedAuth.GET("/user", authHandler.GetCurrentUser)
+
+		// Alternative sync that requires existing authentication (for profile updates)
+		protectedAuth.POST("/profile-sync", authHandler.SyncUserWithToken)
 	}
 
 	// ===============================
@@ -165,7 +177,7 @@ func setupVideoSocialMediaRoutes(
 	}
 
 	// ===============================
-	// PROTECTED ROUTES (FIREBASE AUTH REQUIRED)
+	// PROTECTED ROUTES (FIREBASE AUTH REQUIRED + USER EXISTS IN DB)
 	// ===============================
 	protected := api.Group("")
 	protected.Use(middleware.FirebaseAuth(firebaseService))
@@ -297,6 +309,20 @@ func setupVideoSocialMediaRoutes(
 					"database":    "connected",
 					"firebase":    "initialized",
 					"storage":     "r2-connected",
+				})
+			})
+
+			// 🔍 DEBUG: Auth flow testing endpoint
+			debug.GET("/auth-flow", func(c *gin.Context) {
+				c.JSON(200, gin.H{
+					"message": "Auth flow endpoints",
+					"endpoints": gin.H{
+						"public_sync":    "POST /api/v1/auth/sync (NO auth required - for new users)",
+						"protected_sync": "POST /api/v1/auth/profile-sync (auth required - for updates)",
+						"get_user":       "GET /api/v1/auth/user (auth required)",
+						"verify_token":   "POST /api/v1/auth/verify (no auth required)",
+					},
+					"note": "New users should use /auth/sync, existing users can use /auth/profile-sync",
 				})
 			})
 		}
