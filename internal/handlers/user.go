@@ -1,5 +1,5 @@
 // ===============================
-// internal/handlers/user.go - Video Social Media User Handler
+// internal/handlers/user.go - FIXED Route Parameter Issue
 // ===============================
 
 package handlers
@@ -80,7 +80,7 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 }
 
 func (h *UserHandler) GetUser(c *gin.Context) {
-	userID := c.Param("uid")
+	userID := c.Param("userId") // ✅ FIXED: Changed from "uid" to "userId"
 	if userID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "User ID required"})
 		return
@@ -98,7 +98,7 @@ func (h *UserHandler) GetUser(c *gin.Context) {
 }
 
 func (h *UserHandler) UpdateUser(c *gin.Context) {
-	userID := c.Param("uid")
+	userID := c.Param("userId") // ✅ FIXED: Changed from "uid" to "userId"
 	if userID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "User ID required"})
 		return
@@ -148,7 +148,7 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 }
 
 func (h *UserHandler) DeleteUser(c *gin.Context) {
-	userID := c.Param("uid")
+	userID := c.Param("userId") // ✅ FIXED: Changed from "uid" to "userId"
 	if userID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "User ID required"})
 		return
@@ -354,7 +354,7 @@ func (h *UserHandler) SearchUsers(c *gin.Context) {
 }
 
 func (h *UserHandler) GetUserStats(c *gin.Context) {
-	userID := c.Param("uid")
+	userID := c.Param("userId") // ✅ FIXED: Changed from "uid" to "userId"
 	if userID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "User ID required"})
 		return
@@ -397,7 +397,7 @@ func (h *UserHandler) GetUserStats(c *gin.Context) {
 }
 
 func (h *UserHandler) UpdateUserStatus(c *gin.Context) {
-	userID := c.Param("uid")
+	userID := c.Param("userId") // ✅ FIXED: Changed from "uid" to "userId"
 	if userID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "User ID required"})
 		return
