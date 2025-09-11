@@ -1,5 +1,5 @@
 // ===============================
-// internal/models/user.go - Video Social Media User Model
+// internal/models/user.go - UPDATED User Model with Drama Fields + LastPostAt
 // ===============================
 
 package models
@@ -10,6 +10,32 @@ import (
 	"fmt"
 	"time"
 )
+
+// IntMap represents a map[string]int that can be stored in PostgreSQL as JSONB
+type IntMap map[string]int
+
+// Value implements driver.Valuer for database storage
+func (m IntMap) Value() (driver.Value, error) {
+	if m == nil {
+		return nil, nil
+	}
+	return json.Marshal(m)
+}
+
+// Scan implements sql.Scanner for database retrieval
+func (m *IntMap) Scan(value interface{}) error {
+	if value == nil {
+		*m = make(IntMap)
+		return nil
+	}
+
+	bytes, ok := value.([]byte)
+	if !ok {
+		return fmt.Errorf("cannot scan %T into IntMap", value)
+	}
+
+	return json.Unmarshal(bytes, m)
+}
 
 type User struct {
 	UID            string      `json:"uid" db:"uid"`
@@ -27,9 +53,16 @@ type User struct {
 	IsActive       bool        `json:"isActive" db:"is_active"`
 	IsFeatured     bool        `json:"isFeatured" db:"is_featured"`
 	Tags           StringSlice `json:"tags" db:"tags"`
-	CreatedAt      time.Time   `json:"createdAt" db:"created_at"`
-	UpdatedAt      time.Time   `json:"updatedAt" db:"updated_at"`
-	LastSeen       time.Time   `json:"lastSeen" db:"last_seen"`
+
+	// NEW: Drama-related fields
+	FavoriteDramas StringSlice `json:"favoriteDramas" db:"favorite_dramas"`
+	UnlockedDramas StringSlice `json:"unlockedDramas" db:"unlocked_dramas"`
+	DramaProgress  IntMap      `json:"dramaProgress" db:"drama_progress"`
+
+	CreatedAt  time.Time  `json:"createdAt" db:"created_at"`
+	UpdatedAt  time.Time  `json:"updatedAt" db:"updated_at"`
+	LastSeen   time.Time  `json:"lastSeen" db:"last_seen"`
+	LastPostAt *time.Time `json:"lastPostAt" db:"last_post_at"` // NEW: Last video post timestamp
 
 	// Runtime fields (not stored in DB)
 	IsFollowing   bool `json:"isFollowing" db:"-"`
@@ -83,6 +116,84 @@ func (u *User) CanModerate() bool {
 
 func (u *User) CanManageUsers() bool {
 	return u.IsAdmin()
+}
+
+// NEW: Check if user can create dramas (verified users only)
+func (u *User) CanCreateDramas() bool {
+	return u.IsVerified && u.IsActive
+}
+
+// NEW: Check if user has unlocked a specific drama
+func (u *User) HasUnlockedDrama(dramaID string) bool {
+	for _, id := range u.UnlockedDramas {
+		if id == dramaID {
+			return true
+		}
+	}
+	return false
+}
+
+// NEW: Check if user has favorited a specific drama
+func (u *User) HasFavoritedDrama(dramaID string) bool {
+	for _, id := range u.FavoriteDramas {
+		if id == dramaID {
+			return true
+		}
+	}
+	return false
+}
+
+// NEW: Get drama progress for a specific drama
+func (u *User) GetDramaProgress(dramaID string) int {
+	if u.DramaProgress == nil {
+		return 0
+	}
+	return u.DramaProgress[dramaID]
+}
+
+// NEW: LastPostAt helper methods
+func (u *User) HasPostedVideos() bool {
+	return u.LastPostAt != nil
+}
+
+func (u *User) GetLastPostTime() *time.Time {
+	return u.LastPostAt
+}
+
+func (u *User) GetTimeSinceLastPost() *time.Duration {
+	if u.LastPostAt == nil {
+		return nil
+	}
+	duration := time.Since(*u.LastPostAt)
+	return &duration
+}
+
+func (u *User) GetLastPostTimeAgo() string {
+	if u.LastPostAt == nil {
+		return "Never posted"
+	}
+
+	now := time.Now()
+	difference := now.Sub(*u.LastPostAt)
+
+	if difference.Hours() > 8760 { // More than 1 year
+		years := int(difference.Hours() / 8760)
+		return fmt.Sprintf("%dy ago", years)
+	} else if difference.Hours() > 720 { // More than 1 month
+		months := int(difference.Hours() / 720)
+		return fmt.Sprintf("%dmo ago", months)
+	} else if difference.Hours() > 24 { // More than 1 day
+		days := int(difference.Hours() / 24)
+		return fmt.Sprintf("%dd ago", days)
+	} else if difference.Hours() > 1 { // More than 1 hour
+		hours := int(difference.Hours())
+		return fmt.Sprintf("%dh ago", hours)
+	} else if difference.Minutes() > 1 { // More than 1 minute
+		minutes := int(difference.Minutes())
+		return fmt.Sprintf("%dm ago", minutes)
+	} else {
+		return "Just now"
+	}
 }
 
 func (u *User) HasMinimumFollowers(min int) bool {
@@ -182,6 +293,13 @@ type UserResponse struct {
 	User
 	MutualFollowersCount int     `json:"mutualFollowersCount"`
 	RecentVideos         []Video `json:"recentVideos,omitempty"`
+	// NEW: Drama-related response fields
+	CreatedDramasCount  int `json:"createdDramasCount,omitempty"`
+	FavoriteDramasCount int `json:"favoriteDramasCount"`
+	UnlockedDramasCount int `json:"unlockedDramasCount"`
+	// NEW: Last post related fields
+	HasPostedVideos bool   `json:"hasPostedVideos"`
+	LastPostTimeAgo string `json:"lastPostTimeAgo"`
 }
 
 type UserListResponse struct {
@@ -206,24 +324,36 @@ type UserSearchParams struct {
 
 // User statistics
 type UserStats struct {
-	UserID         string    `json:"userId"`
-	Username       string    `json:"username"`
-	FollowersCount int       `json:"followersCount"`
-	FollowingCount int       `json:"followingCount"`
-	VideosCount    int       `json:"videosCount"`
-	TotalLikes     int       `json:"totalLikes"`
-	TotalViews     int       `json:"totalViews"`
-	EngagementRate float64   `json:"engagementRate"`
-	JoinedAt       time.Time `json:"joinedAt"`
-	LastActiveAt   time.Time `json:"lastActiveAt"`
+	UserID         string  `json:"userId"`
+	Username       string  `json:"username"`
+	FollowersCount int     `json:"followersCount"`
+	FollowingCount int     `json:"followingCount"`
+	VideosCount    int     `json:"videosCount"`
+	TotalLikes     int     `json:"totalLikes"`
+	TotalViews     int     `json:"totalViews"`
+	EngagementRate float64 `json:"engagementRate"`
+
+	// NEW: Drama-related stats
+	CreatedDramasCount  int `json:"createdDramasCount"`
+	DramaRevenue        int `json:"dramaRevenue,omitempty"` // Only for verified users
+	FavoriteDramasCount int `json:"favoriteDramasCount"`
+	UnlockedDramasCount int `json:"unlockedDramasCount"`
+
+	// NEW: Last post related stats
+	HasPostedVideos bool       `json:"hasPostedVideos"`
+	LastPostAt      *time.Time `json:"lastPostAt"`
+	LastPostTimeAgo string     `json:"lastPostTimeAgo"`
+
+	JoinedAt     time.Time `json:"joinedAt"`
+	LastActiveAt time.Time `json:"lastActiveAt"`
 }
 
 // Activity tracking
 type UserActivity struct {
 	UserID       string    `json:"userId"`
-	ActivityType string    `json:"activityType"` // "video_posted", "comment_added", "like_given", etc.
-	TargetID     string    `json:"targetId"`     // Video ID, Comment ID, etc.
-	TargetType   string    `json:"targetType"`   // "video", "comment", "user"
+	ActivityType string    `json:"activityType"` // "video_posted", "drama_created", "drama_unlocked", etc.
+	TargetID     string    `json:"targetId"`     // Video ID, Drama ID, Comment ID, etc.
+	TargetType   string    `json:"targetType"`   // "video", "drama", "comment", "user"
 	CreatedAt    time.Time `json:"createdAt"`
 }
 

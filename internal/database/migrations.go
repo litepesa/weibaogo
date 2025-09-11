@@ -1,5 +1,5 @@
 // ===============================
-// internal/database/migrations.go - Final 100% Error-Free Phone-Only Schema
+// internal/database/migrations.go - COMPLETE with Drama Tables (FIXED SYNTAX) + LastPostAt
 // ===============================
 
 package database
@@ -12,7 +12,7 @@ import (
 )
 
 func RunMigrations(db *sqlx.DB) error {
-	log.Println("📄 Running video social media migrations (Phone-Only)...")
+	log.Println("📄 Running video social media + drama migrations...")
 
 	// Check if migrations table exists
 	_, err := db.Exec(`
@@ -176,7 +176,7 @@ func RunMigrations(db *sqlx.DB) error {
 			Version: "003_add_foreign_keys",
 			Query: `
 				-- Add foreign key constraints (separated for better error handling)
-				DO $$
+				DO $block1$
 				BEGIN
 					-- Videos to users foreign key
 					IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints 
@@ -283,7 +283,7 @@ func RunMigrations(db *sqlx.DB) error {
 						ALTER TABLE coin_purchase_requests ADD CONSTRAINT coin_purchase_requests_user_id_fkey 
 						FOREIGN KEY (user_id) REFERENCES users(uid) ON DELETE CASCADE;
 					END IF;
-				END $$;
+				END $block1$;
 			`,
 		},
 		{
@@ -296,6 +296,7 @@ func RunMigrations(db *sqlx.DB) error {
 				CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen);
 				CREATE INDEX IF NOT EXISTS idx_users_name ON users(name);
 				CREATE INDEX IF NOT EXISTS idx_users_followers_count ON users(followers_count DESC);
+				CREATE INDEX IF NOT EXISTS idx_users_is_verified ON users(is_verified);
 
 				-- Video indexes
 				CREATE INDEX IF NOT EXISTS idx_videos_user_id ON videos(user_id);
@@ -333,7 +334,7 @@ func RunMigrations(db *sqlx.DB) error {
 			Version: "005_add_data_constraints",
 			Query: `
 				-- Add data validation constraints using DO blocks
-				DO $$
+				DO $block1$
 				BEGIN
 					-- User constraints
 					IF NOT EXISTS (SELECT 1 FROM information_schema.check_constraints 
@@ -386,7 +387,7 @@ func RunMigrations(db *sqlx.DB) error {
 						ALTER TABLE wallets ADD CONSTRAINT wallets_coins_balance_positive
 						CHECK (coins_balance >= 0);
 					END IF;
-				END $$;
+				END $block1$;
 
 				-- Update any existing empty names
 				UPDATE users SET name = 'User' WHERE name IS NULL OR name = '';
@@ -397,7 +398,7 @@ func RunMigrations(db *sqlx.DB) error {
 			Query: `
 				-- Function to update user video count
 				CREATE OR REPLACE FUNCTION update_user_video_count()
-				RETURNS TRIGGER AS $$
+				RETURNS TRIGGER AS $func1$
 				BEGIN
 					IF TG_OP = 'INSERT' THEN
 						UPDATE users 
@@ -414,11 +415,11 @@ func RunMigrations(db *sqlx.DB) error {
 					END IF;
 					RETURN NULL;
 				END;
-				$$ LANGUAGE plpgsql;
+				$func1$ LANGUAGE plpgsql;
 
 				-- Function to update video like count
 				CREATE OR REPLACE FUNCTION update_video_like_count()
-				RETURNS TRIGGER AS $$
+				RETURNS TRIGGER AS $func2$
 				BEGIN
 					IF TG_OP = 'INSERT' THEN
 						UPDATE videos 
@@ -435,11 +436,11 @@ func RunMigrations(db *sqlx.DB) error {
 					END IF;
 					RETURN NULL;
 				END;
-				$$ LANGUAGE plpgsql;
+				$func2$ LANGUAGE plpgsql;
 
 				-- Function to update comment count
 				CREATE OR REPLACE FUNCTION update_video_comment_count()
-				RETURNS TRIGGER AS $$
+				RETURNS TRIGGER AS $func3$
 				BEGIN
 					IF TG_OP = 'INSERT' THEN
 						UPDATE videos 
@@ -456,11 +457,11 @@ func RunMigrations(db *sqlx.DB) error {
 					END IF;
 					RETURN NULL;
 				END;
-				$$ LANGUAGE plpgsql;
+				$func3$ LANGUAGE plpgsql;
 
 				-- Function to update follow counts
 				CREATE OR REPLACE FUNCTION update_user_follow_counts()
-				RETURNS TRIGGER AS $$
+				RETURNS TRIGGER AS $func4$
 				BEGIN
 					IF TG_OP = 'INSERT' THEN
 						UPDATE users 
@@ -489,7 +490,7 @@ func RunMigrations(db *sqlx.DB) error {
 					END IF;
 					RETURN NULL;
 				END;
-				$$ LANGUAGE plpgsql;
+				$func4$ LANGUAGE plpgsql;
 			`,
 		},
 		{
@@ -523,6 +524,200 @@ func RunMigrations(db *sqlx.DB) error {
 					EXECUTE FUNCTION update_user_follow_counts();
 			`,
 		},
+		{
+			Version: "008_add_drama_tables",
+			Query: `
+				-- ===============================
+				-- DRAMA FUNCTIONALITY MIGRATION (FIXED SYNTAX)
+				-- ===============================
+				
+				-- Create dramas table (short episodic content)
+				CREATE TABLE IF NOT EXISTS dramas (
+					drama_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+					title VARCHAR(255) NOT NULL,
+					description TEXT NOT NULL,
+					banner_image TEXT DEFAULT '',
+					episode_videos TEXT[] DEFAULT '{}',
+					is_premium BOOLEAN DEFAULT false,
+					free_episodes_count INTEGER DEFAULT 0,
+					view_count INTEGER DEFAULT 0,
+					favorite_count INTEGER DEFAULT 0,
+					unlock_count INTEGER DEFAULT 0,
+					is_featured BOOLEAN DEFAULT false,
+					is_active BOOLEAN DEFAULT true,
+					created_by VARCHAR(255) NOT NULL,
+					created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+					updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+					
+					CONSTRAINT dramas_title_length CHECK (LENGTH(title) >= 1 AND LENGTH(title) <= 255),
+					CONSTRAINT dramas_description_length CHECK (LENGTH(description) >= 1),
+					CONSTRAINT dramas_episode_count CHECK (array_length(episode_videos, 1) <= 100),
+					CONSTRAINT dramas_free_episodes_valid CHECK (free_episodes_count >= 0),
+					CONSTRAINT dramas_counts_positive CHECK (
+						view_count >= 0 AND 
+						favorite_count >= 0 AND 
+						unlock_count >= 0
+					)
+				);
+
+				-- Add foreign key constraint for drama creator
+				DO $drama_block1$
+				BEGIN
+					IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints 
+								  WHERE constraint_name = 'dramas_created_by_fkey' 
+								  AND table_name = 'dramas') THEN
+						ALTER TABLE dramas ADD CONSTRAINT dramas_created_by_fkey 
+						FOREIGN KEY (created_by) REFERENCES users(uid) ON DELETE CASCADE;
+					END IF;
+				END $drama_block1$;
+
+				-- Create indexes for dramas table
+				CREATE INDEX IF NOT EXISTS idx_dramas_created_by ON dramas(created_by);
+				CREATE INDEX IF NOT EXISTS idx_dramas_is_active ON dramas(is_active);
+				CREATE INDEX IF NOT EXISTS idx_dramas_is_featured ON dramas(is_featured);
+				CREATE INDEX IF NOT EXISTS idx_dramas_is_premium ON dramas(is_premium);
+				CREATE INDEX IF NOT EXISTS idx_dramas_created_at ON dramas(created_at DESC);
+				CREATE INDEX IF NOT EXISTS idx_dramas_view_count ON dramas(view_count DESC);
+				CREATE INDEX IF NOT EXISTS idx_dramas_favorite_count ON dramas(favorite_count DESC);
+				CREATE INDEX IF NOT EXISTS idx_dramas_unlock_count ON dramas(unlock_count DESC);
+
+				-- Update users table to add drama-related fields
+				DO $drama_block2$
+				BEGIN
+					IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+								  WHERE table_name = 'users' AND column_name = 'favorite_dramas') THEN
+						ALTER TABLE users ADD COLUMN favorite_dramas TEXT[] DEFAULT '{}';
+					END IF;
+
+					IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+								  WHERE table_name = 'users' AND column_name = 'unlocked_dramas') THEN
+						ALTER TABLE users ADD COLUMN unlocked_dramas TEXT[] DEFAULT '{}';
+					END IF;
+
+					IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+								  WHERE table_name = 'users' AND column_name = 'drama_progress') THEN
+						ALTER TABLE users ADD COLUMN drama_progress JSONB DEFAULT '{}';
+					END IF;
+				END $drama_block2$;
+
+				-- Create user_drama_progress table for detailed progress tracking
+				CREATE TABLE IF NOT EXISTS user_drama_progress (
+					id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+					user_id VARCHAR(255) NOT NULL,
+					drama_id UUID NOT NULL,
+					current_episode INTEGER DEFAULT 1,
+					last_watched_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+					completed BOOLEAN DEFAULT false,
+					created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+					updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+					
+					UNIQUE(user_id, drama_id),
+					CONSTRAINT user_drama_progress_episode_positive CHECK (current_episode > 0)
+				);
+				
+				-- Add foreign keys for user_drama_progress
+				DO $drama_block3$
+				BEGIN
+					IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints 
+								  WHERE constraint_name = 'user_drama_progress_user_id_fkey' 
+								  AND table_name = 'user_drama_progress') THEN
+						ALTER TABLE user_drama_progress ADD CONSTRAINT user_drama_progress_user_id_fkey 
+						FOREIGN KEY (user_id) REFERENCES users(uid) ON DELETE CASCADE;
+					END IF;
+					
+					IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints 
+								  WHERE constraint_name = 'user_drama_progress_drama_id_fkey' 
+								  AND table_name = 'user_drama_progress') THEN
+						ALTER TABLE user_drama_progress ADD CONSTRAINT user_drama_progress_drama_id_fkey 
+						FOREIGN KEY (drama_id) REFERENCES dramas(drama_id) ON DELETE CASCADE;
+					END IF;
+				END $drama_block3$;
+				
+				-- Create indexes for user_drama_progress
+				CREATE INDEX IF NOT EXISTS idx_user_drama_progress_user_id ON user_drama_progress(user_id);
+				CREATE INDEX IF NOT EXISTS idx_user_drama_progress_drama_id ON user_drama_progress(drama_id);
+				CREATE INDEX IF NOT EXISTS idx_user_drama_progress_last_watched ON user_drama_progress(last_watched_at DESC);
+
+				-- Create drama_analytics table for tracking performance
+				CREATE TABLE IF NOT EXISTS drama_analytics (
+					id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+					drama_id UUID NOT NULL,
+					date DATE NOT NULL,
+					views_count INTEGER DEFAULT 0,
+					likes_count INTEGER DEFAULT 0,
+					unlocks_count INTEGER DEFAULT 0,
+					revenue INTEGER DEFAULT 0,
+					created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+					
+					UNIQUE(drama_id, date),
+					CONSTRAINT drama_analytics_counts_positive CHECK (
+						views_count >= 0 AND 
+						likes_count >= 0 AND 
+						unlocks_count >= 0 AND 
+						revenue >= 0
+					)
+				);
+				
+				-- Add foreign key for drama_analytics
+				DO $drama_block4$
+				BEGIN
+					IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints 
+								  WHERE constraint_name = 'drama_analytics_drama_id_fkey' 
+								  AND table_name = 'drama_analytics') THEN
+						ALTER TABLE drama_analytics ADD CONSTRAINT drama_analytics_drama_id_fkey 
+						FOREIGN KEY (drama_id) REFERENCES dramas(drama_id) ON DELETE CASCADE;
+					END IF;
+				END $drama_block4$;
+				
+				-- Create indexes for drama_analytics
+				CREATE INDEX IF NOT EXISTS idx_drama_analytics_drama_id ON drama_analytics(drama_id);
+				CREATE INDEX IF NOT EXISTS idx_drama_analytics_date ON drama_analytics(date DESC);
+				CREATE INDEX IF NOT EXISTS idx_drama_analytics_revenue ON drama_analytics(revenue DESC);
+			`,
+		},
+		{
+			Version: "009_add_last_post_at_and_trigger",
+			Query: `
+				-- ===============================
+				-- ADD LAST_POST_AT FUNCTIONALITY
+				-- ===============================
+				
+				-- Add last_post_at column to users table
+				ALTER TABLE users ADD COLUMN IF NOT EXISTS last_post_at TIMESTAMP WITH TIME ZONE;
+
+				-- Create function to update user's last_post_at when video is created
+				CREATE OR REPLACE FUNCTION update_user_last_post()
+				RETURNS TRIGGER AS $func5$
+				BEGIN
+					UPDATE users 
+					SET last_post_at = NEW.created_at,
+						updated_at = CURRENT_TIMESTAMP
+					WHERE uid = NEW.user_id;
+					RETURN NEW;
+				END;
+				$func5$ LANGUAGE plpgsql;
+
+				-- Create trigger to automatically update last_post_at
+				DROP TRIGGER IF EXISTS trigger_update_user_last_post ON videos;
+				CREATE TRIGGER trigger_update_user_last_post
+					AFTER INSERT ON videos
+					FOR EACH ROW 
+					EXECUTE FUNCTION update_user_last_post();
+
+				-- Create index for last_post_at column for efficient sorting
+				CREATE INDEX IF NOT EXISTS idx_users_last_post_at ON users(last_post_at DESC);
+
+				-- Populate last_post_at for existing users based on their most recent video
+				UPDATE users 
+				SET last_post_at = subquery.latest_post
+				FROM (
+					SELECT user_id, MAX(created_at) as latest_post
+					FROM videos 
+					GROUP BY user_id
+				) AS subquery
+				WHERE users.uid = subquery.user_id;
+			`,
+		},
 	}
 
 	for _, migration := range migrations {
@@ -531,7 +726,7 @@ func RunMigrations(db *sqlx.DB) error {
 		}
 	}
 
-	log.Println("✅ Video social media migrations completed successfully (Phone-Only)")
+	log.Println("✅ Video social media + drama + lastPostAt migrations completed successfully")
 	return nil
 }
 

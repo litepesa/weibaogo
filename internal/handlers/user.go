@@ -1,5 +1,5 @@
 // ===============================
-// internal/handlers/user.go - FIXED Route Parameter Issue
+// internal/handlers/user.go - FIXED Route Parameter Issue + LastPostAt Support
 // ===============================
 
 package handlers
@@ -43,6 +43,16 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 	if user.Tags == nil {
 		user.Tags = make(models.StringSlice, 0)
 	}
+	// Initialize drama-related fields
+	if user.FavoriteDramas == nil {
+		user.FavoriteDramas = make(models.StringSlice, 0)
+	}
+	if user.UnlockedDramas == nil {
+		user.UnlockedDramas = make(models.StringSlice, 0)
+	}
+	if user.DramaProgress == nil {
+		user.DramaProgress = make(models.IntMap)
+	}
 
 	// Validate user
 	if !user.IsValidForCreation() {
@@ -54,10 +64,14 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 	query := `
 		INSERT INTO users (uid, name, phone_number, profile_image, cover_image, bio, user_type, 
 		                   followers_count, following_count, videos_count, likes_count,
-		                   is_verified, is_active, is_featured, tags, created_at, updated_at, last_seen)
+		                   is_verified, is_active, is_featured, tags, 
+		                   favorite_dramas, unlocked_dramas, drama_progress,
+		                   created_at, updated_at, last_seen)
 		VALUES (:uid, :name, :phone_number, :profile_image, :cover_image, :bio, :user_type, 
 		        :followers_count, :following_count, :videos_count, :likes_count,
-		        :is_verified, :is_active, :is_featured, :tags, :created_at, :updated_at, :last_seen)
+		        :is_verified, :is_active, :is_featured, :tags,
+		        :favorite_dramas, :unlocked_dramas, :drama_progress,
+		        :created_at, :updated_at, :last_seen)
 		ON CONFLICT (uid) DO UPDATE SET
 		name = EXCLUDED.name,
 		phone_number = EXCLUDED.phone_number,
@@ -80,14 +94,19 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 }
 
 func (h *UserHandler) GetUser(c *gin.Context) {
-	userID := c.Param("userId") // ✅ FIXED: Changed from "uid" to "userId"
+	userID := c.Param("userId")
 	if userID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "User ID required"})
 		return
 	}
 
 	var user models.User
-	query := `SELECT * FROM users WHERE uid = $1 AND is_active = true`
+	query := `SELECT uid, name, phone_number, profile_image, cover_image, bio, user_type,
+	                 followers_count, following_count, videos_count, likes_count,
+	                 is_verified, is_active, is_featured, tags,
+	                 favorite_dramas, unlocked_dramas, drama_progress,
+	                 created_at, updated_at, last_seen, last_post_at
+	          FROM users WHERE uid = $1 AND is_active = true`
 	err := h.db.Get(&user, query, userID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
@@ -98,7 +117,7 @@ func (h *UserHandler) GetUser(c *gin.Context) {
 }
 
 func (h *UserHandler) UpdateUser(c *gin.Context) {
-	userID := c.Param("userId") // ✅ FIXED: Changed from "uid" to "userId"
+	userID := c.Param("userId")
 	if userID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "User ID required"})
 		return
@@ -134,6 +153,9 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 			cover_image = :cover_image,
 			bio = :bio, 
 			tags = :tags,
+			favorite_dramas = :favorite_dramas,
+			unlocked_dramas = :unlocked_dramas,
+			drama_progress = :drama_progress,
 			updated_at = :updated_at, 
 			last_seen = :last_seen
 		WHERE uid = :uid`
@@ -148,7 +170,7 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 }
 
 func (h *UserHandler) DeleteUser(c *gin.Context) {
-	userID := c.Param("userId") // ✅ FIXED: Changed from "uid" to "userId"
+	userID := c.Param("userId")
 	if userID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "User ID required"})
 		return
@@ -210,6 +232,20 @@ func (h *UserHandler) DeleteUser(c *gin.Context) {
 	_, err = tx.Exec("DELETE FROM videos WHERE user_id = $1", userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete videos"})
+		return
+	}
+
+	// Delete drama-related data
+	_, err = tx.Exec("DELETE FROM user_drama_progress WHERE user_id = $1", userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete drama progress"})
+		return
+	}
+
+	// Delete dramas created by user
+	_, err = tx.Exec("DELETE FROM dramas WHERE created_by = $1", userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete created dramas"})
 		return
 	}
 
@@ -292,12 +328,34 @@ func (h *UserHandler) GetAllUsers(c *gin.Context) {
 		argIndex++
 	}
 
+	// Add sorting - can sort by last_post_at
+	orderBy := "ORDER BY created_at DESC"
+	if sortBy := c.Query("sortBy"); sortBy != "" {
+		switch sortBy {
+		case "lastPost":
+			orderBy = "ORDER BY last_post_at DESC NULLS LAST"
+		case "followers":
+			orderBy = "ORDER BY followers_count DESC"
+		case "videos":
+			orderBy = "ORDER BY videos_count DESC"
+		case "name":
+			orderBy = "ORDER BY name ASC"
+		default:
+			orderBy = "ORDER BY created_at DESC"
+		}
+	}
+
 	// Add pagination
-	limitOffset := fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", argIndex, argIndex+1)
+	limitOffset := fmt.Sprintf(" %s LIMIT $%d OFFSET $%d", orderBy, argIndex, argIndex+1)
 	args = append(args, limit, offset)
 
 	var users []models.User
-	query := "SELECT * FROM users " + whereClause + limitOffset
+	query := `SELECT uid, name, phone_number, profile_image, cover_image, bio, user_type,
+	                 followers_count, following_count, videos_count, likes_count,
+	                 is_verified, is_active, is_featured, tags,
+	                 favorite_dramas, unlocked_dramas, drama_progress,
+	                 created_at, updated_at, last_seen, last_post_at
+	          FROM users ` + whereClause + limitOffset
 	err := h.db.Select(&users, query, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch users"})
@@ -328,7 +386,12 @@ func (h *UserHandler) SearchUsers(c *gin.Context) {
 
 	var users []models.User
 	searchQuery := `
-		SELECT * FROM users 
+		SELECT uid, name, phone_number, profile_image, cover_image, bio, user_type,
+		       followers_count, following_count, videos_count, likes_count,
+		       is_verified, is_active, is_featured, tags,
+		       favorite_dramas, unlocked_dramas, drama_progress,
+		       created_at, updated_at, last_seen, last_post_at
+		FROM users 
 		WHERE is_active = true AND (
 			name ILIKE $1 OR 
 			phone_number ILIKE $1 OR
@@ -354,7 +417,7 @@ func (h *UserHandler) SearchUsers(c *gin.Context) {
 }
 
 func (h *UserHandler) GetUserStats(c *gin.Context) {
-	userID := c.Param("userId") // ✅ FIXED: Changed from "uid" to "userId"
+	userID := c.Param("userId")
 	if userID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "User ID required"})
 		return
@@ -362,13 +425,19 @@ func (h *UserHandler) GetUserStats(c *gin.Context) {
 
 	// Get user with basic stats
 	var user models.User
-	err := h.db.Get(&user, "SELECT * FROM users WHERE uid = $1 AND is_active = true", userID)
+	err := h.db.Get(&user, `
+		SELECT uid, name, phone_number, profile_image, cover_image, bio, user_type,
+		       followers_count, following_count, videos_count, likes_count,
+		       is_verified, is_active, is_featured, tags,
+		       favorite_dramas, unlocked_dramas, drama_progress,
+		       created_at, updated_at, last_seen, last_post_at
+		FROM users WHERE uid = $1 AND is_active = true`, userID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
 
-	// Get additional stats
+	// Get additional video stats
 	var totalViews, totalLikes int
 	err = h.db.QueryRow(`
 		SELECT 
@@ -381,23 +450,39 @@ func (h *UserHandler) GetUserStats(c *gin.Context) {
 		totalLikes = 0
 	}
 
+	// Get drama stats
+	var createdDramasCount int
+	err = h.db.QueryRow(`
+		SELECT COALESCE(COUNT(*), 0) as created_dramas_count
+		FROM dramas 
+		WHERE created_by = $1 AND is_active = true`, userID).Scan(&createdDramasCount)
+	if err != nil {
+		createdDramasCount = 0
+	}
+
 	stats := gin.H{
-		"user":           user,
-		"totalViews":     totalViews,
-		"totalLikes":     totalLikes,
-		"videosCount":    user.VideosCount,
-		"followersCount": user.FollowersCount,
-		"followingCount": user.FollowingCount,
-		"engagementRate": user.GetEngagementRate(),
-		"joinDate":       user.CreatedAt,
-		"lastActiveDate": user.LastSeen,
+		"user":                user,
+		"totalViews":          totalViews,
+		"totalLikes":          totalLikes,
+		"videosCount":         user.VideosCount,
+		"followersCount":      user.FollowersCount,
+		"followingCount":      user.FollowingCount,
+		"engagementRate":      user.GetEngagementRate(),
+		"createdDramasCount":  createdDramasCount,
+		"favoriteDramasCount": len(user.FavoriteDramas),
+		"unlockedDramasCount": len(user.UnlockedDramas),
+		"hasPostedVideos":     user.HasPostedVideos(),
+		"lastPostTimeAgo":     user.GetLastPostTimeAgo(),
+		"joinDate":            user.CreatedAt,
+		"lastActiveDate":      user.LastSeen,
+		"lastPostAt":          user.LastPostAt,
 	}
 
 	c.JSON(http.StatusOK, stats)
 }
 
 func (h *UserHandler) UpdateUserStatus(c *gin.Context) {
-	userID := c.Param("userId") // ✅ FIXED: Changed from "uid" to "userId"
+	userID := c.Param("userId")
 	if userID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "User ID required"})
 		return

@@ -1,5 +1,5 @@
 // ===============================
-// internal/handlers/auth.go - Clean Phone-Only Auth Handler
+// internal/handlers/auth.go - UPDATED Auth Handler with Drama Fields
 // ===============================
 
 package handlers
@@ -140,12 +140,13 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 	err := db.Get(&existingUser, "SELECT * FROM users WHERE uid = $1", requestData.UID)
 
 	if err != nil {
-		// User doesn't exist, create new user with phone-only data
+		// User doesn't exist, create new user with phone-only data + drama fields
 		newUser := models.User{
 			UID:            requestData.UID,
 			Name:           getValidName(requestData.Name),
 			PhoneNumber:    requestData.PhoneNumber,
 			ProfileImage:   "", // Empty - will be uploaded to R2 during profile setup
+			CoverImage:     "", // Empty initially
 			Bio:            getValidBio(requestData.Bio),
 			UserType:       "user", // Default to user
 			FollowersCount: 0,
@@ -156,19 +157,29 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 			IsActive:       true,
 			IsFeatured:     false,
 			Tags:           make(models.StringSlice, 0),
-			CreatedAt:      time.Now(),
-			UpdatedAt:      time.Now(),
-			LastSeen:       time.Now(),
+
+			// NEW: Initialize drama-related fields
+			FavoriteDramas: make(models.StringSlice, 0),
+			UnlockedDramas: make(models.StringSlice, 0),
+			DramaProgress:  make(models.IntMap),
+
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+			LastSeen:  time.Now(),
 		}
 
-		// Insert new user (phone-only schema)
+		// Insert new user (phone-only schema + drama fields)
 		query := `
 			INSERT INTO users (uid, name, phone_number, profile_image, cover_image, bio, user_type, 
 			                   followers_count, following_count, videos_count, likes_count,
-			                   is_verified, is_active, is_featured, tags, created_at, updated_at, last_seen)
+			                   is_verified, is_active, is_featured, tags, 
+			                   favorite_dramas, unlocked_dramas, drama_progress,
+			                   created_at, updated_at, last_seen)
 			VALUES (:uid, :name, :phone_number, :profile_image, :cover_image, :bio, :user_type, 
 			        :followers_count, :following_count, :videos_count, :likes_count,
-			        :is_verified, :is_active, :is_featured, :tags, :created_at, :updated_at, :last_seen)`
+			        :is_verified, :is_active, :is_featured, :tags,
+			        :favorite_dramas, :unlocked_dramas, :drama_progress,
+			        :created_at, :updated_at, :last_seen)`
 
 		_, err = db.NamedExec(query, newUser)
 		if err != nil {
@@ -228,12 +239,14 @@ func (h *AuthHandler) SyncUserWithToken(c *gin.Context) {
 	err = db.Get(&existingUser, "SELECT * FROM users WHERE uid = $1", userID)
 
 	if err != nil {
-		// User doesn't exist, create new user with Firebase data (phone-only)
+		// User doesn't exist, create new user with Firebase data (phone-only + drama fields)
 		newUser := models.User{
 			UID:            userID,
 			Name:           getFirebaseDisplayName(firebaseUser),
 			PhoneNumber:    firebaseUser.PhoneNumber,
 			ProfileImage:   "", // Empty - will be uploaded to R2 during profile setup
+			CoverImage:     "", // Empty initially
+			Bio:            "", // Empty initially
 			UserType:       "user",
 			FollowersCount: 0,
 			FollowingCount: 0,
@@ -243,18 +256,28 @@ func (h *AuthHandler) SyncUserWithToken(c *gin.Context) {
 			IsActive:       true,
 			IsFeatured:     false,
 			Tags:           make(models.StringSlice, 0),
-			CreatedAt:      time.Now(),
-			UpdatedAt:      time.Now(),
-			LastSeen:       time.Now(),
+
+			// NEW: Initialize drama-related fields
+			FavoriteDramas: make(models.StringSlice, 0),
+			UnlockedDramas: make(models.StringSlice, 0),
+			DramaProgress:  make(models.IntMap),
+
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+			LastSeen:  time.Now(),
 		}
 
 		query := `
 			INSERT INTO users (uid, name, phone_number, profile_image, cover_image, bio, user_type, 
 			                   followers_count, following_count, videos_count, likes_count,
-			                   is_verified, is_active, is_featured, tags, created_at, updated_at, last_seen)
+			                   is_verified, is_active, is_featured, tags,
+			                   favorite_dramas, unlocked_dramas, drama_progress,
+			                   created_at, updated_at, last_seen)
 			VALUES (:uid, :name, :phone_number, :profile_image, :cover_image, :bio, :user_type, 
 			        :followers_count, :following_count, :videos_count, :likes_count,
-			        :is_verified, :is_active, :is_featured, :tags, :created_at, :updated_at, :last_seen)`
+			        :is_verified, :is_active, :is_featured, :tags,
+			        :favorite_dramas, :unlocked_dramas, :drama_progress,
+			        :created_at, :updated_at, :last_seen)`
 
 		_, err = db.NamedExec(query, newUser)
 		if err != nil {

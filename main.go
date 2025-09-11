@@ -1,5 +1,5 @@
 // ===============================
-// main.go - Video Social Media App Entry Point (FIXED - Auth Chicken-and-Egg Problem Resolved)
+// main.go - Video Social Media + Drama App Entry Point
 // ===============================
 
 package main
@@ -60,6 +60,7 @@ func main() {
 
 	// Initialize services
 	videoService := services.NewVideoService(db, r2Client)
+	dramaService := services.NewDramaService(db, r2Client) // NEW: Drama service
 	walletService := services.NewWalletService(db)
 	uploadService := services.NewUploadService(r2Client)
 
@@ -67,6 +68,7 @@ func main() {
 	authHandler := handlers.NewAuthHandler(firebaseService)
 	userHandler := handlers.NewUserHandler(db)
 	videoHandler := handlers.NewVideoHandler(videoService)
+	dramaHandler := handlers.NewDramaHandler(dramaService) // NEW: Drama handler
 	walletHandler := handlers.NewWalletHandler(walletService)
 	uploadHandler := handlers.NewUploadHandler(uploadService)
 
@@ -88,64 +90,53 @@ func main() {
 		c.JSON(200, gin.H{
 			"status":   "healthy",
 			"database": database.Health() == nil,
-			"app":      "video-social-media",
+			"app":      "video-social-media-with-dramas",
 		})
 	})
 
-	// Setup video social media routes
-	setupVideoSocialMediaRoutes(router, firebaseService, authHandler, userHandler, videoHandler, walletHandler, uploadHandler)
+	// Setup combined video + drama routes
+	setupCombinedRoutes(router, firebaseService, authHandler, userHandler, videoHandler, dramaHandler, walletHandler, uploadHandler)
 
 	// Start server
 	port := cfg.Port
-	log.Printf("🚀 Video Social Media Server starting on port %s", port)
+	log.Printf("🚀 Video Social Media + Drama Server starting on port %s", port)
 	log.Printf("🌍 Environment: %s", cfg.Environment)
 	log.Printf("💾 Database connected to %s:%s", cfg.Database.Host, cfg.Database.Port)
 	log.Printf("🔥 Firebase service initialized")
 	log.Printf("☁️  R2 storage initialized")
-	log.Printf("📱 Video Social Media API ready")
+	log.Printf("📱 Video Social Media features: enabled")
+	log.Printf("🎭 Drama features: enabled (verified users only)")
 
 	log.Fatal(router.Run(":" + port))
 }
 
-func setupVideoSocialMediaRoutes(
+func setupCombinedRoutes(
 	router *gin.Engine,
 	firebaseService *services.FirebaseService,
 	authHandler *handlers.AuthHandler,
 	userHandler *handlers.UserHandler,
 	videoHandler *handlers.VideoHandler,
+	dramaHandler *handlers.DramaHandler, // NEW: Drama handler
 	walletHandler *handlers.WalletHandler,
 	uploadHandler *handlers.UploadHandler,
 ) {
 	api := router.Group("/api/v1")
 
 	// ===============================
-	// AUTH ROUTES (FIXED - Resolves Chicken-and-Egg Problem)
+	// AUTH ROUTES
 	// ===============================
 	auth := api.Group("/auth")
 	{
-		// 🔧 CRITICAL FIX: User sync endpoint WITHOUT authentication middleware
-		// This solves the chicken-and-egg problem by allowing user creation BEFORE auth check
-		// Flutter should ALWAYS use this endpoint for new user creation/sync
+		// User sync endpoint WITHOUT authentication middleware (solves chicken-and-egg problem)
 		auth.POST("/sync", authHandler.SyncUser)
-
-		// Token verification endpoint (for manual token validation)
 		auth.POST("/verify", authHandler.VerifyToken)
-
-		// 🗑️ REMOVED: The problematic protected sync endpoint that caused the chicken-and-egg issue
-		// OLD: auth.POST("/sync-with-token", middleware.FirebaseAuth(firebaseService), authHandler.SyncUserWithToken)
-		// This endpoint required user to exist in DB before they could be created - impossible!
 	}
 
-	// ===============================
-	// PROTECTED AUTH ROUTES (Require existing user in database)
-	// ===============================
+	// Protected auth routes
 	protectedAuth := api.Group("/auth")
 	protectedAuth.Use(middleware.FirebaseAuth(firebaseService))
 	{
-		// Get current authenticated user info (requires user to exist in DB)
 		protectedAuth.GET("/user", authHandler.GetCurrentUser)
-
-		// Alternative sync that requires existing authentication (for profile updates)
 		protectedAuth.POST("/profile-sync", authHandler.SyncUserWithToken)
 	}
 
@@ -154,77 +145,109 @@ func setupVideoSocialMediaRoutes(
 	// ===============================
 	public := api.Group("")
 	{
-		// Video discovery endpoints (public browsing)
+		// ===== VIDEO ENDPOINTS =====
 		public.GET("/videos", videoHandler.GetVideos)
 		public.GET("/videos/featured", videoHandler.GetFeaturedVideos)
 		public.GET("/videos/trending", videoHandler.GetTrendingVideos)
 		public.GET("/videos/:videoId", videoHandler.GetVideo)
 		public.POST("/videos/:videoId/views", videoHandler.IncrementViews)
 		public.GET("/users/:userId/videos", videoHandler.GetUserVideos)
-
-		// Comment endpoints (public read access)
 		public.GET("/videos/:videoId/comments", videoHandler.GetVideoComments)
 
-		// User profile endpoints (public access for viewing profiles)
+		// ===== DRAMA ENDPOINTS (NEW) =====
+		public.GET("/dramas", dramaHandler.GetDramas)
+		public.GET("/dramas/featured", dramaHandler.GetFeaturedDramas)
+		public.GET("/dramas/trending", dramaHandler.GetTrendingDramas)
+		public.GET("/dramas/search", dramaHandler.SearchDramas)
+		public.GET("/dramas/:dramaId", dramaHandler.GetDrama)
+		public.POST("/dramas/:dramaId/views", dramaHandler.IncrementViews)
+
+		// Episode endpoints (compatibility with old API)
+		public.GET("/dramas/:dramaId/episodes", dramaHandler.GetDramaEpisodes)
+		public.GET("/dramas/:dramaId/episodes/:episodeNumber", dramaHandler.GetEpisode)
+
+		// ===== USER PROFILE ENDPOINTS (PUBLIC) =====
 		public.GET("/users/:userId", userHandler.GetUser)
 		public.GET("/users/:userId/stats", userHandler.GetUserStats)
 		public.GET("/users/:userId/followers", videoHandler.GetUserFollowers)
 		public.GET("/users/:userId/following", videoHandler.GetUserFollowing)
-
-		// User search (public)
 		public.GET("/users", userHandler.GetAllUsers)
 		public.GET("/users/search", userHandler.SearchUsers)
 	}
 
 	// ===============================
-	// PROTECTED ROUTES (FIREBASE AUTH REQUIRED + USER EXISTS IN DB)
+	// PROTECTED ROUTES (FIREBASE AUTH REQUIRED)
 	// ===============================
 	protected := api.Group("")
 	protected.Use(middleware.FirebaseAuth(firebaseService))
 	{
-		// User management endpoints (now work because sync creates user first)
+		// ===== USER MANAGEMENT =====
 		protected.PUT("/users/:userId", userHandler.UpdateUser)
 		protected.DELETE("/users/:userId", userHandler.DeleteUser)
 		protected.POST("/users/:userId/status", userHandler.UpdateUserStatus)
 
-		// Video creation and management
+		// ===== VIDEO FEATURES =====
 		protected.POST("/videos", videoHandler.CreateVideo)
 		protected.PUT("/videos/:videoId", videoHandler.UpdateVideo)
 		protected.DELETE("/videos/:videoId", videoHandler.DeleteVideo)
-
-		// Video interaction endpoints
 		protected.POST("/videos/:videoId/like", videoHandler.LikeVideo)
 		protected.DELETE("/videos/:videoId/like", videoHandler.UnlikeVideo)
 		protected.POST("/videos/:videoId/share", videoHandler.ShareVideo)
 		protected.GET("/users/:userId/liked-videos", videoHandler.GetUserLikedVideos)
 
-		// Social features
+		// ===== DRAMA FEATURES (NEW) =====
+		// Drama interactions
+		protected.POST("/dramas/:dramaId/favorite", dramaHandler.ToggleFavorite)
+		protected.POST("/dramas/:dramaId/progress", dramaHandler.UpdateProgress)
+		protected.POST("/dramas/unlock", dramaHandler.UnlockDrama)
+
+		// User drama data
+		protected.GET("/my/dramas/favorites", dramaHandler.GetUserFavorites)
+		protected.GET("/my/dramas/continue-watching", dramaHandler.GetContinueWatching)
+		protected.GET("/dramas/:dramaId/progress", dramaHandler.GetUserProgress)
+
+		// ===== SOCIAL FEATURES =====
 		protected.POST("/users/:userId/follow", videoHandler.FollowUser)
 		protected.DELETE("/users/:userId/follow", videoHandler.UnfollowUser)
 		protected.GET("/feed/following", videoHandler.GetFollowingFeed)
 
-		// Comment management (authenticated actions)
+		// ===== COMMENT MANAGEMENT =====
 		protected.POST("/videos/:videoId/comments", videoHandler.CreateComment)
 		protected.DELETE("/comments/:commentId", videoHandler.DeleteComment)
 		protected.POST("/comments/:commentId/like", videoHandler.LikeComment)
 		protected.DELETE("/comments/:commentId/like", videoHandler.UnlikeComment)
 
-		// User analytics and statistics
+		// ===== ANALYTICS =====
 		protected.GET("/stats/videos", videoHandler.GetVideoStats)
 
-		// ===============================
-		// WALLET ENDPOINTS (INDEPENDENT FEATURE)
-		// ===============================
+		// ===== WALLET ENDPOINTS =====
 		protected.GET("/wallet/:userId", walletHandler.GetWallet)
 		protected.GET("/wallet/:userId/transactions", walletHandler.GetTransactions)
 		protected.POST("/wallet/:userId/purchase-request", walletHandler.CreatePurchaseRequest)
 
-		// ===============================
-		// FILE UPLOAD ENDPOINTS
-		// ===============================
+		// ===== FILE UPLOAD =====
 		protected.POST("/upload", uploadHandler.UploadFile)
 		protected.POST("/upload/batch", uploadHandler.BatchUploadFiles)
 		protected.GET("/upload/health", uploadHandler.HealthCheck)
+
+		// ===============================
+		// VERIFIED USER DRAMA CREATION (VERIFIED USERS ONLY)
+		// ===============================
+		verifiedUser := protected.Group("")
+		// Note: Verification check is done in the handlers, not middleware
+		{
+			// Drama creation and management (verified users only)
+			verifiedUser.POST("/dramas", dramaHandler.CreateDramaWithEpisodes)
+			verifiedUser.PUT("/dramas/:dramaId", dramaHandler.UpdateDrama)
+			verifiedUser.DELETE("/dramas/:dramaId", dramaHandler.DeleteDrama)
+			verifiedUser.POST("/dramas/:dramaId/featured", dramaHandler.ToggleFeatured)
+			verifiedUser.POST("/dramas/:dramaId/active", dramaHandler.ToggleActive)
+
+			// Verified user drama management
+			verifiedUser.GET("/my/dramas", dramaHandler.GetMyDramas)
+			verifiedUser.GET("/my/dramas/analytics", dramaHandler.GetMyDramaAnalytics)
+			verifiedUser.GET("/dramas/:dramaId/revenue", dramaHandler.GetDramaRevenue)
+		}
 
 		// ===============================
 		// ADMIN ROUTES (ADMIN ACCESS REQUIRED)
@@ -232,30 +255,34 @@ func setupVideoSocialMediaRoutes(
 		admin := protected.Group("")
 		admin.Use(middleware.AdminOnly())
 		{
-			// Video moderation
+			// ===== VIDEO MODERATION =====
 			admin.POST("/admin/videos/:videoId/featured", videoHandler.ToggleFeatured)
 			admin.POST("/admin/videos/:videoId/active", videoHandler.ToggleActive)
 
-			// User management (admin functions)
+			// ===== USER MANAGEMENT (ADMIN) =====
 			admin.GET("/admin/users", userHandler.GetAllUsers)
 			admin.POST("/admin/users/:userId/status", userHandler.UpdateUserStatus)
 
-			// Wallet management (admin functions)
+			// ===== WALLET MANAGEMENT (ADMIN) =====
 			admin.POST("/admin/wallet/:userId/add-coins", walletHandler.AddCoins)
 			admin.GET("/admin/purchase-requests", walletHandler.GetPendingPurchases)
 			admin.POST("/admin/purchase-requests/:requestId/approve", walletHandler.ApprovePurchase)
 			admin.POST("/admin/purchase-requests/:requestId/reject", walletHandler.RejectPurchase)
 
-			// Platform analytics
+			// ===== PLATFORM ANALYTICS =====
 			admin.GET("/admin/stats", func(c *gin.Context) {
 				c.JSON(200, gin.H{
 					"message": "Platform statistics endpoint",
-					"note":    "Video social media analytics dashboard",
-					"status":  "operational",
+					"features": gin.H{
+						"videos":        "enabled",
+						"dramas":        "enabled",
+						"verified_only": true,
+					},
+					"status": "operational",
 				})
 			})
 
-			// System health and monitoring
+			// ===== SYSTEM HEALTH =====
 			admin.GET("/admin/health", func(c *gin.Context) {
 				dbStats := database.Stats()
 				c.JSON(200, gin.H{
@@ -273,9 +300,10 @@ func setupVideoSocialMediaRoutes(
 						"type":   "cloudflare-r2",
 					},
 					"app": gin.H{
-						"name":    "video-social-media",
-						"version": "1.0.0",
-						"status":  "healthy",
+						"name":     "video-social-media-with-dramas",
+						"version":  "1.0.0",
+						"status":   "healthy",
+						"features": []string{"videos", "dramas", "wallet", "social"},
 					},
 				})
 			})
@@ -309,20 +337,81 @@ func setupVideoSocialMediaRoutes(
 					"database":    "connected",
 					"firebase":    "initialized",
 					"storage":     "r2-connected",
+					"features": gin.H{
+						"videos": gin.H{
+							"enabled":      true,
+							"creation":     "all authenticated users",
+							"interactions": "likes, comments, shares, follows",
+						},
+						"dramas": gin.H{
+							"enabled":      true,
+							"creation":     "verified users only",
+							"monetization": "coin-based unlocking",
+							"unlock_cost":  99,
+						},
+						"wallet": gin.H{
+							"enabled":      true,
+							"transactions": true,
+							"purchases":    "admin approval required",
+						},
+					},
 				})
 			})
 
-			// 🔍 DEBUG: Auth flow testing endpoint
-			debug.GET("/auth-flow", func(c *gin.Context) {
+			debug.GET("/features", func(c *gin.Context) {
 				c.JSON(200, gin.H{
-					"message": "Auth flow endpoints",
-					"endpoints": gin.H{
-						"public_sync":    "POST /api/v1/auth/sync (NO auth required - for new users)",
-						"protected_sync": "POST /api/v1/auth/profile-sync (auth required - for updates)",
-						"get_user":       "GET /api/v1/auth/user (auth required)",
-						"verify_token":   "POST /api/v1/auth/verify (no auth required)",
+					"video_endpoints": gin.H{
+						"public": []string{
+							"GET /videos - list videos",
+							"GET /videos/featured - featured videos",
+							"GET /videos/trending - trending videos",
+							"GET /videos/:id - get specific video",
+							"GET /videos/:id/comments - video comments",
+						},
+						"authenticated": []string{
+							"POST /videos - create video",
+							"PUT /videos/:id - update video",
+							"DELETE /videos/:id - delete video",
+							"POST /videos/:id/like - like video",
+							"POST /videos/:id/comments - add comment",
+						},
 					},
-					"note": "New users should use /auth/sync, existing users can use /auth/profile-sync",
+					"drama_endpoints": gin.H{
+						"public": []string{
+							"GET /dramas - list dramas",
+							"GET /dramas/featured - featured dramas",
+							"GET /dramas/trending - trending dramas",
+							"GET /dramas/:id - get specific drama",
+							"GET /dramas/:id/episodes - drama episodes",
+							"GET /dramas/:id/episodes/:num - specific episode",
+						},
+						"authenticated": []string{
+							"POST /dramas/:id/favorite - toggle favorite",
+							"POST /dramas/:id/progress - update progress",
+							"POST /dramas/unlock - unlock premium drama",
+							"GET /my/dramas/favorites - user favorites",
+							"GET /my/dramas/continue-watching - continue watching",
+						},
+						"verified_users": []string{
+							"POST /dramas - create drama (verified only)",
+							"PUT /dramas/:id - update drama (owner only)",
+							"DELETE /dramas/:id - delete drama (owner only)",
+							"GET /my/dramas - my created dramas",
+							"GET /my/dramas/analytics - revenue analytics",
+						},
+					},
+					"auth_flow": gin.H{
+						"public_sync":    "POST /auth/sync (no auth required - for new users)",
+						"protected_sync": "POST /auth/profile-sync (auth required - for updates)",
+						"get_user":       "GET /auth/user (auth required)",
+						"verify_token":   "POST /auth/verify (no auth required)",
+					},
+					"permission_levels": gin.H{
+						"public":        "view content, no auth required",
+						"authenticated": "create videos, interact with content",
+						"verified":      "create dramas + all authenticated features",
+						"admin":         "moderate content, manage users, approve purchases",
+					},
 				})
 			})
 		}

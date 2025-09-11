@@ -24,6 +24,10 @@ type R2Client struct {
 	publicURL  string
 }
 
+func (r *R2Client) UploadFileWithProgress(ctx context.Context, uniqueFilename string, progressReader io.Reader, contentType string, totalSize int64) any {
+	panic("unimplemented")
+}
+
 func NewR2Client(cfg config.R2Config) (*R2Client, error) {
 	// Create AWS session configured for R2
 	sess, err := session.NewSession(&aws.Config{
