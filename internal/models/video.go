@@ -103,19 +103,22 @@ func (s *StringSlice) Scan(value interface{}) error {
 	return nil
 }
 
-// Video model for social media content
+// 🔧 FIXED: Video model with proper JSON tags for frontend compatibility
 type Video struct {
-	ID               string      `json:"id" db:"id"`
-	UserID           string      `json:"userId" db:"user_id" binding:"required"`
-	UserName         string      `json:"userName" db:"user_name" binding:"required"`
-	UserImage        string      `json:"userImage" db:"user_image"`
-	VideoURL         string      `json:"videoUrl" db:"video_url"`
-	ThumbnailURL     string      `json:"thumbnailUrl" db:"thumbnail_url"`
-	Caption          string      `json:"caption" db:"caption"`
-	LikesCount       int         `json:"likesCount" db:"likes_count"`
-	CommentsCount    int         `json:"commentsCount" db:"comments_count"`
-	ViewsCount       int         `json:"viewsCount" db:"views_count"`
-	SharesCount      int         `json:"sharesCount" db:"shares_count"`
+	ID           string `json:"id" db:"id"`
+	UserID       string `json:"userId" db:"user_id" binding:"required"`
+	UserName     string `json:"userName" db:"user_name" binding:"required"`
+	UserImage    string `json:"userImage" db:"user_image"`
+	VideoURL     string `json:"videoUrl" db:"video_url"`
+	ThumbnailURL string `json:"thumbnailUrl" db:"thumbnail_url"`
+	Caption      string `json:"caption" db:"caption"`
+
+	// 🔧 CRITICAL FIX: Map database fields to frontend-expected JSON names
+	LikesCount    int `json:"likes" db:"likes_count"`       // Frontend expects "likes"
+	CommentsCount int `json:"comments" db:"comments_count"` // Frontend expects "comments"
+	ViewsCount    int `json:"views" db:"views_count"`       // Frontend expects "views"
+	SharesCount   int `json:"shares" db:"shares_count"`     // Frontend expects "shares"
+
 	Tags             StringSlice `json:"tags" db:"tags"`
 	IsActive         bool        `json:"isActive" db:"is_active"`
 	IsFeatured       bool        `json:"isFeatured" db:"is_featured"`
@@ -127,6 +130,63 @@ type Video struct {
 	// Runtime fields (not stored in DB)
 	IsLiked     bool `json:"isLiked" db:"-"`
 	IsFollowing bool `json:"isFollowing" db:"-"`
+}
+
+// 🔧 NEW: VideoResponse struct for API responses with proper mapping
+type VideoResponse struct {
+	ID           string `json:"id"`
+	UserID       string `json:"userId"`
+	UserName     string `json:"userName"`
+	UserImage    string `json:"userImage"`
+	VideoURL     string `json:"videoUrl"`
+	ThumbnailURL string `json:"thumbnailUrl"`
+	Caption      string `json:"caption"`
+
+	// 🔧 CRITICAL: Frontend-compatible field names
+	LikesCount    int `json:"likes"`    // Database: likes_count -> JSON: likes
+	CommentsCount int `json:"comments"` // Database: comments_count -> JSON: comments
+	ViewsCount    int `json:"views"`    // Database: views_count -> JSON: views
+	SharesCount   int `json:"shares"`   // Database: shares_count -> JSON: shares
+
+	Tags             StringSlice `json:"tags"`
+	IsActive         bool        `json:"isActive"`
+	IsFeatured       bool        `json:"isFeatured"`
+	IsMultipleImages bool        `json:"isMultipleImages"`
+	ImageUrls        StringSlice `json:"imageUrls"`
+	CreatedAt        time.Time   `json:"createdAt"`
+	UpdatedAt        time.Time   `json:"updatedAt"`
+
+	// Runtime fields
+	IsLiked          bool   `json:"isLiked"`
+	IsFollowing      bool   `json:"isFollowing"`
+	UserProfileImage string `json:"userProfileImage"`
+}
+
+// 🔧 NEW: Convert Video to VideoResponse
+func (v *Video) ToResponse() *VideoResponse {
+	return &VideoResponse{
+		ID:               v.ID,
+		UserID:           v.UserID,
+		UserName:         v.UserName,
+		UserImage:        v.UserImage,
+		VideoURL:         v.VideoURL,
+		ThumbnailURL:     v.ThumbnailURL,
+		Caption:          v.Caption,
+		LikesCount:       v.LikesCount,
+		CommentsCount:    v.CommentsCount,
+		ViewsCount:       v.ViewsCount,
+		SharesCount:      v.SharesCount,
+		Tags:             v.Tags,
+		IsActive:         v.IsActive,
+		IsFeatured:       v.IsFeatured,
+		IsMultipleImages: v.IsMultipleImages,
+		ImageUrls:        v.ImageUrls,
+		CreatedAt:        v.CreatedAt,
+		UpdatedAt:        v.UpdatedAt,
+		IsLiked:          v.IsLiked,
+		IsFollowing:      v.IsFollowing,
+		UserProfileImage: v.UserImage,
+	}
 }
 
 // Helper methods
@@ -157,6 +217,28 @@ func (v *Video) GetMediaCount() int {
 
 func (v *Video) HasContent() bool {
 	return v.IsVideoPost() || v.IsImagePost()
+}
+
+// Calculate engagement rate
+func (v *Video) CalculateEngagementRate() float64 {
+	if v.ViewsCount == 0 {
+		return 0.0
+	}
+	totalEngagement := v.LikesCount + v.CommentsCount + v.SharesCount
+	return (float64(totalEngagement) / float64(v.ViewsCount)) * 100
+}
+
+// Calculate trending score
+func (v *Video) CalculateTrendingScore() float64 {
+	hoursOld := time.Since(v.CreatedAt).Hours()
+	if hoursOld == 0 {
+		hoursOld = 1 // Avoid division by zero
+	}
+	// Weight recent videos higher
+	timeDecay := 1.0 / (1.0 + hoursOld/24.0) // Decay over days
+	// Engagement score
+	engagementScore := float64(v.LikesCount*2 + v.CommentsCount*3 + v.SharesCount*5 + v.ViewsCount)
+	return engagementScore * timeDecay
 }
 
 // Validation methods
@@ -194,7 +276,7 @@ func (v *Video) IsValidForCreation() bool {
 	return len(v.ValidateForCreation()) == 0
 }
 
-// Comment model for video comments
+// 🔧 FIXED: Comment model with proper JSON tags for frontend compatibility
 type Comment struct {
 	ID                  string    `json:"id" db:"id"`
 	VideoID             string    `json:"videoId" db:"video_id" binding:"required"`
@@ -202,7 +284,7 @@ type Comment struct {
 	AuthorName          string    `json:"authorName" db:"author_name" binding:"required"`
 	AuthorImage         string    `json:"authorImage" db:"author_image"`
 	Content             string    `json:"content" db:"content" binding:"required"`
-	LikesCount          int       `json:"likesCount" db:"likes_count"`
+	LikesCount          int       `json:"likes" db:"likes_count"` // Frontend expects "likes"
 	IsReply             bool      `json:"isReply" db:"is_reply"`
 	RepliedToCommentID  *string   `json:"repliedToCommentId" db:"replied_to_comment_id"`
 	RepliedToAuthorName *string   `json:"repliedToAuthorName" db:"replied_to_author_name"`
@@ -289,18 +371,24 @@ type CreateCommentRequest struct {
 	RepliedToAuthorName *string `json:"repliedToAuthorName"`
 }
 
-// Video response models for API
-type VideoResponse struct {
-	Video
-	UserProfileImage string `json:"userProfileImage"`
-	IsFollowing      bool   `json:"isFollowing"`
+// 🔧 NEW: VideoCountsSummary for quick count updates
+type VideoCountsSummary struct {
+	VideoID       string    `json:"videoId" db:"id"`
+	ViewsCount    int       `json:"views" db:"views_count"`
+	LikesCount    int       `json:"likes" db:"likes_count"`
+	CommentsCount int       `json:"comments" db:"comments_count"`
+	SharesCount   int       `json:"shares" db:"shares_count"`
+	UpdatedAt     time.Time `json:"updatedAt" db:"updated_at"`
 }
 
+// Video response models for API
 type VideoFeedResponse struct {
 	Videos      []VideoResponse `json:"videos"`
 	HasMore     bool            `json:"hasMore"`
 	LastVideoID string          `json:"lastVideoId"`
 	Total       int             `json:"total"`
+	Page        int             `json:"page"`
+	Limit       int             `json:"limit"`
 }
 
 type CommentResponse struct {
@@ -309,11 +397,13 @@ type CommentResponse struct {
 }
 
 type VideoStatsResponse struct {
-	VideoID       string `json:"videoId"`
-	LikesCount    int    `json:"likesCount"`
-	CommentsCount int    `json:"commentsCount"`
-	ViewsCount    int    `json:"viewsCount"`
-	SharesCount   int    `json:"sharesCount"`
+	VideoID        string  `json:"videoId"`
+	LikesCount     int     `json:"likes"`
+	CommentsCount  int     `json:"comments"`
+	ViewsCount     int     `json:"views"`
+	SharesCount    int     `json:"shares"`
+	EngagementRate float64 `json:"engagementRate"`
+	TrendingScore  float64 `json:"trendingScore"`
 }
 
 // Video constants
@@ -354,10 +444,10 @@ const (
 type VideoPerformance struct {
 	VideoID        string    `json:"videoId"`
 	Title          string    `json:"title"`
-	LikesCount     int       `json:"likesCount"`
-	CommentsCount  int       `json:"commentsCount"`
-	ViewsCount     int       `json:"viewsCount"`
-	SharesCount    int       `json:"sharesCount"`
+	LikesCount     int       `json:"likes"`
+	CommentsCount  int       `json:"comments"`
+	ViewsCount     int       `json:"views"`
+	SharesCount    int       `json:"shares"`
 	EngagementRate float64   `json:"engagementRate"`
 	CreatedAt      time.Time `json:"createdAt"`
 }
