@@ -1,5 +1,5 @@
 // ===============================
-// main.go - Video Social Media + Drama App with Performance Optimizations
+// main.go - Video Social Media App with Performance Optimizations (Drama Removed)
 // ===============================
 
 package main
@@ -202,18 +202,16 @@ func main() {
 		log.Fatal("Failed to initialize R2 client:", err)
 	}
 
-	// Initialize optimized services
+	// Initialize optimized services (drama service removed)
 	videoService := services.NewVideoService(db, r2Client)
-	dramaService := services.NewDramaService(db, r2Client)
 	walletService := services.NewWalletService(db)
 	userService := services.NewUserService(db)
 	uploadService := services.NewUploadService(r2Client)
 
-	// Initialize handlers
+	// Initialize handlers (drama handler removed)
 	authHandler := handlers.NewAuthHandler(firebaseService)
 	userHandler := handlers.NewUserHandler(db)
 	videoHandler := handlers.NewVideoHandler(videoService, userService)
-	dramaHandler := handlers.NewDramaHandler(dramaService)
 	walletHandler := handlers.NewWalletHandler(walletService)
 	uploadHandler := handlers.NewUploadHandler(uploadService)
 
@@ -248,18 +246,17 @@ func main() {
 		})
 	})
 
-	// Setup optimized routes
-	setupOptimizedCombinedRoutes(router, firebaseService, authHandler, userHandler, videoHandler, dramaHandler, walletHandler, uploadHandler)
+	// Setup optimized routes (drama routes removed)
+	setupOptimizedRoutes(router, firebaseService, authHandler, userHandler, videoHandler, walletHandler, uploadHandler)
 
 	// Start server
 	port := cfg.Port
-	log.Printf("🚀 OPTIMIZED Video Social Media + Drama Server starting on port %s", port)
+	log.Printf("🚀 OPTIMIZED Video Social Media Server starting on port %s", port)
 	log.Printf("🌍 Environment: %s", cfg.Environment)
 	log.Printf("💾 Database connected with optimized pool (Max: 50, Idle: 25)")
 	log.Printf("🔥 Firebase service initialized")
 	log.Printf("☁️  R2 storage initialized")
 	log.Printf("📱 Video Social Media features: enabled + optimized")
-	log.Printf("🎭 Drama features: enabled (verified users only)")
 	log.Printf("⚡ Performance optimizations:")
 	log.Printf("   • Gzip compression: enabled (~70%% size reduction)")
 	log.Printf("   • Rate limiting: 100 req/min (video endpoints)")
@@ -321,16 +318,15 @@ func setupOptimizedRouter(cfg *config.Config, rateLimiter *RateLimiter) *gin.Eng
 }
 
 // ===============================
-// OPTIMIZED COMBINED ROUTES
+// OPTIMIZED ROUTES (DRAMA REMOVED)
 // ===============================
 
-func setupOptimizedCombinedRoutes(
+func setupOptimizedRoutes(
 	router *gin.Engine,
 	firebaseService *services.FirebaseService,
 	authHandler *handlers.AuthHandler,
 	userHandler *handlers.UserHandler,
 	videoHandler *handlers.VideoHandler,
-	dramaHandler *handlers.DramaHandler,
 	walletHandler *handlers.WalletHandler,
 	uploadHandler *handlers.UploadHandler,
 ) {
@@ -373,16 +369,6 @@ func setupOptimizedCombinedRoutes(
 		// 🚀 NEW: BULK VIDEO ENDPOINT (Major Performance Improvement)
 		public.POST("/videos/bulk", videoHandler.GetVideosBulk) // Fetch up to 50 videos in single request
 
-		// ===== DRAMA ENDPOINTS (PRESERVED) =====
-		public.GET("/dramas", dramaHandler.GetDramas)
-		public.GET("/dramas/featured", dramaHandler.GetFeaturedDramas)
-		public.GET("/dramas/trending", dramaHandler.GetTrendingDramas)
-		public.GET("/dramas/search", dramaHandler.SearchDramas)
-		public.GET("/dramas/:dramaId", dramaHandler.GetDrama)
-		public.POST("/dramas/:dramaId/views", dramaHandler.IncrementViews)
-		public.GET("/dramas/:dramaId/episodes", dramaHandler.GetDramaEpisodes)
-		public.GET("/dramas/:dramaId/episodes/:episodeNumber", dramaHandler.GetEpisode)
-
 		// ===== USER PROFILE ENDPOINTS (PUBLIC) =====
 		public.GET("/users/:userId", userHandler.GetUser)
 		public.GET("/users/:userId/stats", userHandler.GetUserStats)
@@ -417,14 +403,6 @@ func setupOptimizedCombinedRoutes(
 		// ===== ENHANCED RECOMMENDATION SYSTEM =====
 		protected.GET("/videos/recommendations", videoHandler.GetVideoRecommendations) // Personalized
 
-		// ===== DRAMA FEATURES (PRESERVED) =====
-		protected.POST("/dramas/:dramaId/favorite", dramaHandler.ToggleFavorite)
-		protected.POST("/dramas/:dramaId/progress", dramaHandler.UpdateProgress)
-		protected.POST("/dramas/unlock", dramaHandler.UnlockDrama)
-		protected.GET("/my/dramas/favorites", dramaHandler.GetUserFavorites)
-		protected.GET("/my/dramas/continue-watching", dramaHandler.GetContinueWatching)
-		protected.GET("/dramas/:dramaId/progress", dramaHandler.GetUserProgress)
-
 		// ===== SOCIAL FEATURES =====
 		protected.POST("/users/:userId/follow", videoHandler.FollowUser)
 		protected.DELETE("/users/:userId/follow", videoHandler.UnfollowUser)
@@ -451,21 +429,6 @@ func setupOptimizedCombinedRoutes(
 		protected.POST("/upload", uploadHandler.UploadFile)
 		protected.POST("/upload/batch", uploadHandler.BatchUploadFiles)
 		protected.GET("/upload/health", uploadHandler.HealthCheck)
-
-		// ===============================
-		// VERIFIED USER DRAMA CREATION (PRESERVED)
-		// ===============================
-		verifiedUser := protected.Group("")
-		{
-			verifiedUser.POST("/dramas", dramaHandler.CreateDramaWithEpisodes)
-			verifiedUser.PUT("/dramas/:dramaId", dramaHandler.UpdateDrama)
-			verifiedUser.DELETE("/dramas/:dramaId", dramaHandler.DeleteDrama)
-			verifiedUser.POST("/dramas/:dramaId/featured", dramaHandler.ToggleFeatured)
-			verifiedUser.POST("/dramas/:dramaId/active", dramaHandler.ToggleActive)
-			verifiedUser.GET("/my/dramas", dramaHandler.GetMyDramas)
-			verifiedUser.GET("/my/dramas/analytics", dramaHandler.GetMyDramaAnalytics)
-			verifiedUser.GET("/dramas/:dramaId/revenue", dramaHandler.GetDramaRevenue)
-		}
 
 		// ===============================
 		// 🚀 OPTIMIZED ADMIN ROUTES
@@ -499,8 +462,6 @@ func setupOptimizedCombinedRoutes(
 					"message": "Platform statistics endpoint",
 					"features": gin.H{
 						"videos":            "enabled + optimized",
-						"dramas":            "enabled",
-						"verified_only":     true,
 						"gzip_compression":  true,
 						"rate_limiting":     true,
 						"bulk_endpoints":    true,
@@ -559,7 +520,7 @@ func setupOptimizedCombinedRoutes(
 						"name":                  "video-social-media-optimized",
 						"version":               "1.1.0-performance",
 						"status":                "healthy",
-						"features":              []string{"videos", "dramas", "wallet", "social", "performance"},
+						"features":              []string{"videos", "wallet", "social", "performance"},
 						"estimated_improvement": "80% faster loading times",
 					},
 				})
@@ -664,12 +625,6 @@ func setupOptimizedCombinedRoutes(
 							"streaming":    "optimized headers",
 							"caching":      "smart TTL per endpoint",
 						},
-						"dramas": gin.H{
-							"enabled":      true,
-							"creation":     "verified users only",
-							"monetization": "coin-based unlocking",
-							"unlock_cost":  99,
-						},
 						"wallet": gin.H{
 							"enabled":      true,
 							"transactions": true,
@@ -710,29 +665,6 @@ func setupOptimizedCombinedRoutes(
 							"GET /videos/:id/analytics - creator analytics",
 						},
 					},
-					"drama_endpoints": gin.H{
-						"public": []string{
-							"GET /dramas - list dramas",
-							"GET /dramas/featured - featured dramas",
-							"GET /dramas/trending - trending dramas",
-							"GET /dramas/:id - get specific drama",
-							"GET /dramas/:id/episodes - drama episodes",
-						},
-						"authenticated": []string{
-							"POST /dramas/:id/favorite - toggle favorite",
-							"POST /dramas/:id/progress - update progress",
-							"POST /dramas/unlock - unlock premium drama",
-							"GET /my/dramas/favorites - user favorites",
-							"GET /my/dramas/continue-watching - continue watching",
-						},
-						"verified_users": []string{
-							"POST /dramas - create drama (verified only)",
-							"PUT /dramas/:id - update drama (owner only)",
-							"DELETE /dramas/:id - delete drama (owner only)",
-							"GET /my/dramas - my created dramas",
-							"GET /my/dramas/analytics - revenue analytics",
-						},
-					},
 					"performance_features": gin.H{
 						"compression":        "Gzip compression (~70% size reduction)",
 						"rate_limiting":      "Smart limits per endpoint type",
@@ -751,7 +683,6 @@ func setupOptimizedCombinedRoutes(
 					"permission_levels": gin.H{
 						"public":        "view content, no auth required",
 						"authenticated": "create videos, interact with content",
-						"verified":      "create dramas + all authenticated features",
 						"admin":         "moderate content, manage users, approve purchases",
 					},
 					"estimated_improvement": "80% faster loading with these optimizations",

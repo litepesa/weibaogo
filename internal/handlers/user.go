@@ -43,16 +43,6 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 	if user.Tags == nil {
 		user.Tags = make(models.StringSlice, 0)
 	}
-	// Initialize drama-related fields
-	if user.FavoriteDramas == nil {
-		user.FavoriteDramas = make(models.StringSlice, 0)
-	}
-	if user.UnlockedDramas == nil {
-		user.UnlockedDramas = make(models.StringSlice, 0)
-	}
-	if user.DramaProgress == nil {
-		user.DramaProgress = make(models.IntMap)
-	}
 
 	// Validate user
 	if !user.IsValidForCreation() {
@@ -65,12 +55,10 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 		INSERT INTO users (uid, name, phone_number, profile_image, cover_image, bio, user_type, 
 		                   followers_count, following_count, videos_count, likes_count,
 		                   is_verified, is_active, is_featured, tags, 
-		                   favorite_dramas, unlocked_dramas, drama_progress,
 		                   created_at, updated_at, last_seen)
 		VALUES (:uid, :name, :phone_number, :profile_image, :cover_image, :bio, :user_type, 
 		        :followers_count, :following_count, :videos_count, :likes_count,
 		        :is_verified, :is_active, :is_featured, :tags,
-		        :favorite_dramas, :unlocked_dramas, :drama_progress,
 		        :created_at, :updated_at, :last_seen)
 		ON CONFLICT (uid) DO UPDATE SET
 		name = EXCLUDED.name,
@@ -104,7 +92,6 @@ func (h *UserHandler) GetUser(c *gin.Context) {
 	query := `SELECT uid, name, phone_number, profile_image, cover_image, bio, user_type,
 	                 followers_count, following_count, videos_count, likes_count,
 	                 is_verified, is_active, is_featured, tags,
-	                 favorite_dramas, unlocked_dramas, drama_progress,
 	                 created_at, updated_at, last_seen, last_post_at
 	          FROM users WHERE uid = $1 AND is_active = true`
 	err := h.db.Get(&user, query, userID)
@@ -153,9 +140,6 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 			cover_image = :cover_image,
 			bio = :bio, 
 			tags = :tags,
-			favorite_dramas = :favorite_dramas,
-			unlocked_dramas = :unlocked_dramas,
-			drama_progress = :drama_progress,
 			updated_at = :updated_at, 
 			last_seen = :last_seen
 		WHERE uid = :uid`
@@ -232,20 +216,6 @@ func (h *UserHandler) DeleteUser(c *gin.Context) {
 	_, err = tx.Exec("DELETE FROM videos WHERE user_id = $1", userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete videos"})
-		return
-	}
-
-	// Delete drama-related data
-	_, err = tx.Exec("DELETE FROM user_drama_progress WHERE user_id = $1", userID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete drama progress"})
-		return
-	}
-
-	// Delete dramas created by user
-	_, err = tx.Exec("DELETE FROM dramas WHERE created_by = $1", userID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete created dramas"})
 		return
 	}
 
@@ -353,7 +323,6 @@ func (h *UserHandler) GetAllUsers(c *gin.Context) {
 	query := `SELECT uid, name, phone_number, profile_image, cover_image, bio, user_type,
 	                 followers_count, following_count, videos_count, likes_count,
 	                 is_verified, is_active, is_featured, tags,
-	                 favorite_dramas, unlocked_dramas, drama_progress,
 	                 created_at, updated_at, last_seen, last_post_at
 	          FROM users ` + whereClause + limitOffset
 	err := h.db.Select(&users, query, args...)
@@ -389,7 +358,6 @@ func (h *UserHandler) SearchUsers(c *gin.Context) {
 		SELECT uid, name, phone_number, profile_image, cover_image, bio, user_type,
 		       followers_count, following_count, videos_count, likes_count,
 		       is_verified, is_active, is_featured, tags,
-		       favorite_dramas, unlocked_dramas, drama_progress,
 		       created_at, updated_at, last_seen, last_post_at
 		FROM users 
 		WHERE is_active = true AND (
@@ -429,7 +397,6 @@ func (h *UserHandler) GetUserStats(c *gin.Context) {
 		SELECT uid, name, phone_number, profile_image, cover_image, bio, user_type,
 		       followers_count, following_count, videos_count, likes_count,
 		       is_verified, is_active, is_featured, tags,
-		       favorite_dramas, unlocked_dramas, drama_progress,
 		       created_at, updated_at, last_seen, last_post_at
 		FROM users WHERE uid = $1 AND is_active = true`, userID)
 	if err != nil {
@@ -450,32 +417,19 @@ func (h *UserHandler) GetUserStats(c *gin.Context) {
 		totalLikes = 0
 	}
 
-	// Get drama stats
-	var createdDramasCount int
-	err = h.db.QueryRow(`
-		SELECT COALESCE(COUNT(*), 0) as created_dramas_count
-		FROM dramas 
-		WHERE created_by = $1 AND is_active = true`, userID).Scan(&createdDramasCount)
-	if err != nil {
-		createdDramasCount = 0
-	}
-
 	stats := gin.H{
-		"user":                user,
-		"totalViews":          totalViews,
-		"totalLikes":          totalLikes,
-		"videosCount":         user.VideosCount,
-		"followersCount":      user.FollowersCount,
-		"followingCount":      user.FollowingCount,
-		"engagementRate":      user.GetEngagementRate(),
-		"createdDramasCount":  createdDramasCount,
-		"favoriteDramasCount": len(user.FavoriteDramas),
-		"unlockedDramasCount": len(user.UnlockedDramas),
-		"hasPostedVideos":     user.HasPostedVideos(),
-		"lastPostTimeAgo":     user.GetLastPostTimeAgo(),
-		"joinDate":            user.CreatedAt,
-		"lastActiveDate":      user.LastSeen,
-		"lastPostAt":          user.LastPostAt,
+		"user":            user,
+		"totalViews":      totalViews,
+		"totalLikes":      totalLikes,
+		"videosCount":     user.VideosCount,
+		"followersCount":  user.FollowersCount,
+		"followingCount":  user.FollowingCount,
+		"engagementRate":  user.GetEngagementRate(),
+		"hasPostedVideos": user.HasPostedVideos(),
+		"lastPostTimeAgo": user.GetLastPostTimeAgo(),
+		"joinDate":        user.CreatedAt,
+		"lastActiveDate":  user.LastSeen,
+		"lastPostAt":      user.LastPostAt,
 	}
 
 	c.JSON(http.StatusOK, stats)

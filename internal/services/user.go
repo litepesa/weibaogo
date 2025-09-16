@@ -1,5 +1,5 @@
 // ===============================
-// internal/services/user.go - User Service for Video Social Media + Drama App
+// internal/services/user.go - User Service for Video Social Media
 // ===============================
 
 package services
@@ -36,7 +36,6 @@ func (s *UserService) GetUser(ctx context.Context, userID string) (*models.User,
 		SELECT uid, name, phone_number, profile_image, cover_image, bio, user_type,
 		       followers_count, following_count, videos_count, likes_count,
 		       is_verified, is_active, is_featured, tags,
-		       favorite_dramas, unlocked_dramas, drama_progress,
 		       created_at, updated_at, last_seen, last_post_at
 		FROM users 
 		WHERE uid = $1 AND is_active = true`
