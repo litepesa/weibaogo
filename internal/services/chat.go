@@ -1,5 +1,5 @@
 // ===============================
-// internal/services/chat.go - Chat Service
+// internal/services/chat.go - Updated Chat Service (User-Based, No Moments)
 // ===============================
 
 package services
@@ -422,15 +422,15 @@ func (s *ChatService) SetChatSettings(chatID, userID string, wallpaperURL *strin
 	return nil
 }
 
-// SendVideoReactionMessage sends a video reaction message
+// SendVideoReactionMessage sends a video reaction message (UPDATED: user-based, no channels)
 func (s *ChatService) SendVideoReactionMessage(chatID, senderID string, videoReaction models.VideoReactionMessage) error {
 	metadata := map[string]interface{}{
 		"isVideoReaction": true,
 		"videoId":         videoReaction.VideoID,
 		"videoUrl":        videoReaction.VideoURL,
 		"thumbnailUrl":    videoReaction.ThumbnailURL,
-		"channelName":     videoReaction.ChannelName,
-		"channelImage":    videoReaction.ChannelImage,
+		"userName":        videoReaction.UserName,  // Changed from channelName
+		"userImage":       videoReaction.UserImage, // Changed from channelImage
 	}
 
 	message := &models.Message{
@@ -442,37 +442,6 @@ func (s *ChatService) SendVideoReactionMessage(chatID, senderID string, videoRea
 		Status:        models.MessageStatusSent,
 		Timestamp:     time.Now(),
 		MediaURL:      &videoReaction.VideoURL,
-		MediaMetadata: metadata,
-		Reactions:     make(models.StringMap),
-		ReadBy:        make(models.TimeMap),
-		DeliveredTo:   make(models.TimeMap),
-		CreatedAt:     time.Now(),
-	}
-
-	return s.SendMessage(message)
-}
-
-// SendMomentReactionMessage sends a moment reaction message
-func (s *ChatService) SendMomentReactionMessage(chatID, senderID string, momentReaction models.MomentReactionMessage) error {
-	metadata := map[string]interface{}{
-		"isMomentReaction": true,
-		"momentId":         momentReaction.MomentID,
-		"thumbnailUrl":     momentReaction.ThumbnailURL,
-		"authorName":       momentReaction.AuthorName,
-		"authorImage":      momentReaction.AuthorImage,
-		"mediaType":        momentReaction.MediaType,
-		"momentContent":    momentReaction.Content,
-	}
-
-	message := &models.Message{
-		MessageID:     uuid.New().String(),
-		ChatID:        chatID,
-		SenderID:      senderID,
-		Content:       momentReaction.Reaction,
-		Type:          models.MessageTypeText,
-		Status:        models.MessageStatusSent,
-		Timestamp:     time.Now(),
-		MediaURL:      &momentReaction.MediaURL,
 		MediaMetadata: metadata,
 		Reactions:     make(models.StringMap),
 		ReadBy:        make(models.TimeMap),

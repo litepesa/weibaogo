@@ -1,5 +1,5 @@
 // ===============================
-// internal/handlers/chat.go - Chat Handler
+// internal/handlers/chat.go - Updated Chat Handler (User-Based, No Moments)
 // ===============================
 
 package handlers
@@ -527,7 +527,7 @@ func (h *ChatHandler) SetChatSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Chat settings updated"})
 }
 
-// SendVideoReaction sends a video reaction message
+// SendVideoReaction sends a video reaction message (UPDATED: user-based, no channels)
 func (h *ChatHandler) SendVideoReaction(c *gin.Context) {
 	chatID := c.Param("chatId")
 	if chatID == "" {
@@ -554,33 +554,4 @@ func (h *ChatHandler) SendVideoReaction(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{"message": "Video reaction sent successfully"})
-}
-
-// SendMomentReaction sends a moment reaction message
-func (h *ChatHandler) SendMomentReaction(c *gin.Context) {
-	chatID := c.Param("chatId")
-	if chatID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Chat ID required"})
-		return
-	}
-
-	var request models.MomentReactionMessage
-	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	senderID := c.GetString("userID")
-	if senderID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
-		return
-	}
-
-	err := h.chatService.SendMomentReactionMessage(chatID, senderID, request)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send moment reaction"})
-		return
-	}
-
-	c.JSON(http.StatusCreated, gin.H{"message": "Moment reaction sent successfully"})
 }

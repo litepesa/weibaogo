@@ -1,5 +1,5 @@
 // ===============================
-// internal/models/chat.go - Chat and Message Models
+// internal/models/chat.go - Updated Chat and Message Models (User-Based, No Moments)
 // ===============================
 
 package models
@@ -116,7 +116,7 @@ func (m *TimeMap) Scan(value interface{}) error {
 	return nil
 }
 
-// Chat represents a chat conversation
+// Chat represents a chat conversation between users
 type Chat struct {
 	ChatID            string      `json:"chatId" db:"chat_id"`
 	Participants      StringSlice `json:"participants" db:"participants"`
@@ -134,7 +134,7 @@ type Chat struct {
 	UpdatedAt         time.Time   `json:"updatedAt" db:"updated_at"`
 }
 
-// Message represents a chat message
+// Message represents a chat message between users
 type Message struct {
 	MessageID        string                 `json:"messageId" db:"message_id"`
 	ChatID           string                 `json:"chatId" db:"chat_id"`
@@ -325,24 +325,14 @@ type ChatSettingsRequest struct {
 	FontSize     *float64 `json:"fontSize"`
 }
 
+// UPDATED: Video reaction without channel references - user-based
 type VideoReactionMessage struct {
 	VideoID      string `json:"videoId" binding:"required"`
 	VideoURL     string `json:"videoUrl" binding:"required"`
 	ThumbnailURL string `json:"thumbnailUrl" binding:"required"`
-	ChannelName  string `json:"channelName" binding:"required"`
-	ChannelImage string `json:"channelImage" binding:"required"`
+	UserName     string `json:"userName" binding:"required"`  // Changed from channelName
+	UserImage    string `json:"userImage" binding:"required"` // Changed from channelImage
 	Reaction     string `json:"reaction,omitempty"`
-}
-
-type MomentReactionMessage struct {
-	MomentID     string `json:"momentId" binding:"required"`
-	MediaURL     string `json:"mediaUrl" binding:"required"`
-	ThumbnailURL string `json:"thumbnailUrl,omitempty"`
-	AuthorName   string `json:"authorName" binding:"required"`
-	AuthorImage  string `json:"authorImage" binding:"required"`
-	Content      string `json:"content" binding:"required"`
-	Reaction     string `json:"reaction" binding:"required"`
-	MediaType    string `json:"mediaType" binding:"required"`
 }
 
 // Response models

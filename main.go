@@ -434,11 +434,11 @@ func setupOptimizedRoutes(
 		protected.POST("/comments/:commentId/like", videoHandler.LikeComment)
 		protected.DELETE("/comments/:commentId/like", videoHandler.UnlikeComment)
 
-		// ===== 📱 NEW: CHAT ENDPOINTS =====
+		// ===== 📱 CHAT ENDPOINTS (User-Based System) =====
 		chatRoutes := protected.Group("/chats")
 		{
 			// Chat management
-			chatRoutes.POST("", chatHandler.CreateOrGetChat) // Create/get chat
+			chatRoutes.POST("", chatHandler.CreateOrGetChat) // Create/get chat between users
 			chatRoutes.GET("", chatHandler.GetChats)         // Get user's chats
 			chatRoutes.GET("/:chatId", chatHandler.GetChat)  // Get specific chat
 
@@ -455,9 +455,8 @@ func setupOptimizedRoutes(
 			chatRoutes.PUT("/:chatId/messages/:messageId", chatHandler.UpdateMessage)    // Edit message
 			chatRoutes.DELETE("/:chatId/messages/:messageId", chatHandler.DeleteMessage) // Delete message
 
-			// Special message types
-			chatRoutes.POST("/:chatId/video-reaction", chatHandler.SendVideoReaction)   // Video reactions
-			chatRoutes.POST("/:chatId/moment-reaction", chatHandler.SendMomentReaction) // Moment reactions
+			// Video reactions (user-based, no channels or moments)
+			chatRoutes.POST("/:chatId/video-reaction", chatHandler.SendVideoReaction) // Video reactions only
 		}
 
 		// ===== 📱 NEW: CONTACT ENDPOINTS =====
