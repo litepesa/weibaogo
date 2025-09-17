@@ -1,5 +1,5 @@
 // ===============================
-// main.go - Video Social Media App with Performance Optimizations (Drama Removed)
+// main.go - Updated with Chat and Contacts Support
 // ===============================
 
 package main
@@ -84,7 +84,7 @@ func (rl *RateLimiter) cleanup() {
 	rl.mutex.Lock()
 	defer rl.mutex.Unlock()
 
-	cutoff := time.Now().Add(-10 * time.Minute) // Remove entries older than 10 minutes
+	cutoff := time.Now().Add(-10 * time.Minute)
 	for ip, visitor := range rl.visitors {
 		if visitor.lastSeen.Before(cutoff) {
 			delete(rl.visitors, ip)
@@ -115,8 +115,12 @@ func createRateLimitMiddleware(rateLimiter *RateLimiter) gin.HandlerFunc {
 			// Standard limits for video list endpoints
 			limit = 100
 			window = time.Minute
+		} else if contains(path, "/chats") || contains(path, "/contacts") {
+			// More lenient for chat/contact endpoints
+			limit = 300
+			window = time.Minute
 		} else {
-			// More lenient for other endpoints
+			// Default for other endpoints
 			limit = 200
 			window = time.Minute
 		}
@@ -139,6 +143,15 @@ func createRateLimitMiddleware(rateLimiter *RateLimiter) gin.HandlerFunc {
 		c.Header("X-RateLimit-Limit", string(rune(limit)))
 		c.Next()
 	}
+}
+
+func contains(str, substr string) bool {
+	for i := 0; i <= len(str)-len(substr); i++ {
+		if str[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
 
 // ===============================
@@ -167,27 +180,21 @@ func main() {
 	}
 	defer database.Close()
 
-	// Apply database optimizations directly
-	log.Println("📊 Applying database optimizations for video workload:")
-	db.SetMaxOpenConns(50)                  // Increased for concurrent video requests
-	db.SetMaxIdleConns(25)                  // Keep more connections ready
-	db.SetConnMaxLifetime(10 * time.Minute) // Longer lifetime for video streaming
-	db.SetConnMaxIdleTime(5 * time.Minute)  // Keep idle connections longer
-	log.Printf("   • Max open connections: 50")
-	log.Printf("   • Max idle connections: 25")
-	log.Printf("   • Connection lifetime: 10 minutes")
-	log.Printf("   • Idle timeout: 5 minutes")
+	// Apply database optimizations
+	log.Println("📊 Applying database optimizations for video + chat workload:")
+	db.SetMaxOpenConns(75)                  // Increased for chat + video
+	db.SetMaxIdleConns(35)                  // Higher for real-time features
+	db.SetConnMaxLifetime(15 * time.Minute) // Longer for persistent connections
+	db.SetConnMaxIdleTime(8 * time.Minute)  // Extended for chat connections
+	log.Printf("   • Max open connections: 75")
+	log.Printf("   • Max idle connections: 35")
+	log.Printf("   • Connection lifetime: 15 minutes")
+	log.Printf("   • Idle timeout: 8 minutes")
 
-	// Run existing migrations (keeping your existing function)
-	// Note: This will use whatever RunMigrations function you have in your migrations file
-	log.Println("🔧 Running database migrations...")
-	// if err := database.RunMigrations(db); err != nil {
-	// 	log.Fatal("Failed to run migrations:", err)
-	// }
-
-	// Create performance indexes if function exists
-	if err := database.CreatePerformanceIndexes(); err != nil {
-		log.Printf("Warning: Failed to create performance indexes: %v", err)
+	// Run database migrations
+	log.Println("🔧 Running database migrations with chat and contacts support...")
+	if err := database.RunMigrations(db); err != nil {
+		log.Fatal("Failed to run migrations:", err)
 	}
 
 	// Initialize Firebase service
@@ -202,32 +209,42 @@ func main() {
 		log.Fatal("Failed to initialize R2 client:", err)
 	}
 
-	// Initialize optimized services (drama service removed)
+	// Initialize services
 	videoService := services.NewVideoService(db, r2Client)
 	walletService := services.NewWalletService(db)
 	userService := services.NewUserService(db)
 	uploadService := services.NewUploadService(r2Client)
+	chatService := services.NewChatService(db)
+	contactService := services.NewContactService(db)
 
-	// Initialize handlers (drama handler removed)
+	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(firebaseService)
 	userHandler := handlers.NewUserHandler(db)
 	videoHandler := handlers.NewVideoHandler(videoService, userService)
 	walletHandler := handlers.NewWalletHandler(walletService)
 	uploadHandler := handlers.NewUploadHandler(uploadService)
+	chatHandler := handlers.NewChatHandler(chatService, userService)
+	contactHandler := handlers.NewContactHandler(contactService, userService)
 
 	// Initialize rate limiter
 	rateLimiter := NewRateLimiter()
 
-	// Setup optimized router
+	// Setup router
 	router := setupOptimizedRouter(cfg, rateLimiter)
 
-	// Health check with optimization info
+	// Health check with chat/contacts info
 	router.GET("/health", func(c *gin.Context) {
 		dbStats := database.Stats()
 		c.JSON(200, gin.H{
 			"status":   "healthy",
 			"database": database.Health() == nil,
-			"app":      "video-social-media-optimized",
+			"app":      "video-social-media-with-chat",
+			"features": gin.H{
+				"videos":   true,
+				"wallet":   true,
+				"chat":     true,
+				"contacts": true,
+			},
 			"optimizations": gin.H{
 				"gzip_compression":   true,
 				"rate_limiting":      true,
@@ -235,36 +252,40 @@ func main() {
 				"bulk_endpoints":     true,
 				"streaming_headers":  true,
 				"url_optimization":   true,
+				"real_time_chat":     true,
 			},
 			"database_stats": gin.H{
 				"open_connections": dbStats.OpenConnections,
 				"in_use":           dbStats.InUse,
 				"idle":             dbStats.Idle,
-				"max_open":         50,
-				"max_idle":         25,
+				"max_open":         75,
+				"max_idle":         35,
 			},
 		})
 	})
 
-	// Setup optimized routes (drama routes removed)
-	setupOptimizedRoutes(router, firebaseService, authHandler, userHandler, videoHandler, walletHandler, uploadHandler)
+	// Setup routes
+	setupOptimizedRoutes(router, firebaseService, authHandler, userHandler, videoHandler,
+		walletHandler, uploadHandler, chatHandler, contactHandler)
 
 	// Start server
 	port := cfg.Port
-	log.Printf("🚀 OPTIMIZED Video Social Media Server starting on port %s", port)
+	log.Printf("🚀 ENHANCED Video Social Media Server with Chat & Contacts starting on port %s", port)
 	log.Printf("🌍 Environment: %s", cfg.Environment)
-	log.Printf("💾 Database connected with optimized pool (Max: 50, Idle: 25)")
+	log.Printf("💾 Database connected with enhanced pool (Max: 75, Idle: 35)")
 	log.Printf("🔥 Firebase service initialized")
 	log.Printf("☁️  R2 storage initialized")
-	log.Printf("📱 Video Social Media features: enabled + optimized")
+	log.Printf("📱 Features enabled:")
+	log.Printf("   • Video Social Media: ✅")
+	log.Printf("   • Real-time Chat: ✅")
+	log.Printf("   • Contact Management: ✅")
+	log.Printf("   • Wallet System: ✅")
 	log.Printf("⚡ Performance optimizations:")
-	log.Printf("   • Gzip compression: enabled (~70%% size reduction)")
-	log.Printf("   • Rate limiting: 100 req/min (video endpoints)")
-	log.Printf("   • Connection pooling: optimized for video workload")
-	log.Printf("   • Bulk endpoints: enabled (50 videos/request)")
-	log.Printf("   • Streaming headers: enabled for video content")
-	log.Printf("   • URL optimization: enabled for CDN/R2")
-	log.Printf("   • Smart caching: different TTLs per endpoint type")
+	log.Printf("   • Enhanced connection pooling for real-time features")
+	log.Printf("   • Optimized rate limiting for chat endpoints")
+	log.Printf("   • JSONB support for chat metadata")
+	log.Printf("   • Efficient contact synchronization")
+	log.Printf("   • Video reaction messages support")
 
 	log.Fatal(router.Run(":" + port))
 }
@@ -276,40 +297,48 @@ func main() {
 func setupOptimizedRouter(cfg *config.Config, rateLimiter *RateLimiter) *gin.Engine {
 	router := gin.Default()
 
-	// 🚀 GZIP COMPRESSION MIDDLEWARE (~70% reduction in response sizes)
-	router.Use(gzip.Gzip(gzip.DefaultCompression, gzip.WithExcludedExtensions([]string{".mp4", ".avi", ".mov", ".webm"})))
+	// Enhanced GZIP compression (excluding video/audio formats)
+	router.Use(gzip.Gzip(gzip.DefaultCompression, gzip.WithExcludedExtensions([]string{
+		".mp4", ".avi", ".mov", ".webm", ".mp3", ".wav", ".ogg"})))
 
-	// 🚀 RATE LIMITING MIDDLEWARE
+	// Enhanced rate limiting
 	router.Use(createRateLimitMiddleware(rateLimiter))
 
-	// 🚀 ENHANCED CORS MIDDLEWARE with streaming headers
+	// Enhanced CORS with chat headers
 	router.Use(cors.New(cors.Config{
 		AllowOrigins: cfg.AllowedOrigins,
 		AllowMethods: []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
 		AllowHeaders: []string{
 			"Origin", "Content-Type", "Authorization",
-			"Range", "Accept-Ranges", // For video streaming
-			"Cache-Control", "If-None-Match", "If-Modified-Since", // For caching
+			"Range", "Accept-Ranges",
+			"Cache-Control", "If-None-Match", "If-Modified-Since",
+			"X-Chat-ID", "X-Message-ID", "X-Contact-Sync", // Chat-specific headers
 		},
 		ExposeHeaders: []string{
 			"Content-Length", "Content-Range", "Accept-Ranges",
 			"Cache-Control", "Last-Modified", "ETag",
 			"X-RateLimit-Limit", "X-RateLimit-Remaining", "Retry-After",
+			"X-Chat-Status", "X-Message-Status", "X-Sync-Version", // Chat-specific headers
 		},
 		AllowCredentials: true,
-		MaxAge:           12 * 3600, // 12 hours
+		MaxAge:           12 * 3600,
 	}))
 
-	// 🚀 PERFORMANCE HEADERS MIDDLEWARE
+	// Enhanced performance headers
 	router.Use(func(c *gin.Context) {
 		// Add performance hints
 		c.Header("X-DNS-Prefetch-Control", "on")
-		c.Header("X-Powered-By", "video-social-optimized")
+		c.Header("X-Powered-By", "video-social-chat-optimized")
 
 		// Security headers
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("X-Frame-Options", "SAMEORIGIN")
 		c.Header("X-XSS-Protection", "1; mode=block")
+
+		// Chat-specific headers
+		if contains(c.Request.URL.Path, "/chats") || contains(c.Request.URL.Path, "/messages") {
+			c.Header("X-Chat-Support", "enabled")
+		}
 
 		c.Next()
 	})
@@ -318,7 +347,7 @@ func setupOptimizedRouter(cfg *config.Config, rateLimiter *RateLimiter) *gin.Eng
 }
 
 // ===============================
-// OPTIMIZED ROUTES (DRAMA REMOVED)
+// ENHANCED ROUTES WITH CHAT & CONTACTS
 // ===============================
 
 func setupOptimizedRoutes(
@@ -329,6 +358,8 @@ func setupOptimizedRoutes(
 	videoHandler *handlers.VideoHandler,
 	walletHandler *handlers.WalletHandler,
 	uploadHandler *handlers.UploadHandler,
+	chatHandler *handlers.ChatHandler,
+	contactHandler *handlers.ContactHandler,
 ) {
 	api := router.Group("/api/v1")
 
@@ -349,125 +380,168 @@ func setupOptimizedRoutes(
 	}
 
 	// ===============================
-	// 🚀 OPTIMIZED PUBLIC ROUTES
+	// PUBLIC ROUTES (VIDEO CONTENT)
 	// ===============================
 	public := api.Group("")
 	{
-		// ===== OPTIMIZED VIDEO ENDPOINTS =====
-		public.GET("/videos", videoHandler.GetVideos)                            // 15min cache
-		public.GET("/videos/featured", videoHandler.GetFeaturedVideos)           // 15min cache
-		public.GET("/videos/trending", videoHandler.GetTrendingVideos)           // 15min cache
-		public.GET("/videos/popular", videoHandler.GetPopularVideos)             // 15min cache
-		public.GET("/videos/search", videoHandler.SearchVideos)                  // 15min cache
-		public.GET("/videos/:videoId", videoHandler.GetVideo)                    // 30min cache
-		public.GET("/videos/:videoId/qualities", videoHandler.GetVideoQualities) // 1hr cache
-		public.GET("/videos/:videoId/metrics", videoHandler.GetVideoMetrics)     // 30min cache
-		public.POST("/videos/:videoId/views", videoHandler.IncrementViews)       // No cache
-		public.GET("/users/:userId/videos", videoHandler.GetUserVideos)          // 15min cache
-		public.GET("/videos/:videoId/comments", videoHandler.GetVideoComments)   // 5min cache
+		// Video endpoints (existing)
+		public.GET("/videos", videoHandler.GetVideos)
+		public.GET("/videos/featured", videoHandler.GetFeaturedVideos)
+		public.GET("/videos/trending", videoHandler.GetTrendingVideos)
+		public.GET("/videos/popular", videoHandler.GetPopularVideos)
+		public.GET("/videos/search", videoHandler.SearchVideos)
+		public.GET("/videos/:videoId", videoHandler.GetVideo)
+		public.GET("/videos/:videoId/comments", videoHandler.GetVideoComments)
+		public.POST("/videos/:videoId/views", videoHandler.IncrementViews)
+		public.GET("/users/:userId/videos", videoHandler.GetUserVideos)
+		public.POST("/videos/bulk", videoHandler.GetVideosBulk)
 
-		// 🚀 NEW: BULK VIDEO ENDPOINT (Major Performance Improvement)
-		public.POST("/videos/bulk", videoHandler.GetVideosBulk) // Fetch up to 50 videos in single request
-
-		// ===== USER PROFILE ENDPOINTS (PUBLIC) =====
+		// User profile endpoints (existing)
 		public.GET("/users/:userId", userHandler.GetUser)
 		public.GET("/users/:userId/stats", userHandler.GetUserStats)
-		public.GET("/users/:userId/followers", videoHandler.GetUserFollowers)
-		public.GET("/users/:userId/following", videoHandler.GetUserFollowing)
 		public.GET("/users", userHandler.GetAllUsers)
 		public.GET("/users/search", userHandler.SearchUsers)
 	}
 
 	// ===============================
-	// 🚀 OPTIMIZED PROTECTED ROUTES
+	// PROTECTED ROUTES
 	// ===============================
 	protected := api.Group("")
 	protected.Use(middleware.FirebaseAuth(firebaseService))
 	{
-		// ===== USER MANAGEMENT =====
+		// ===== USER MANAGEMENT (EXISTING) =====
 		protected.PUT("/users/:userId", userHandler.UpdateUser)
 		protected.DELETE("/users/:userId", userHandler.DeleteUser)
 		protected.POST("/users/:userId/status", userHandler.UpdateUserStatus)
 
-		// ===== OPTIMIZED VIDEO FEATURES =====
-		protected.POST("/videos", videoHandler.CreateVideo) // Enhanced validation
+		// ===== VIDEO FEATURES (EXISTING) =====
+		protected.POST("/videos", videoHandler.CreateVideo)
 		protected.PUT("/videos/:videoId", videoHandler.UpdateVideo)
 		protected.DELETE("/videos/:videoId", videoHandler.DeleteVideo)
-		protected.POST("/videos/:videoId/like", videoHandler.LikeVideo)              // Immediate count update
-		protected.DELETE("/videos/:videoId/like", videoHandler.UnlikeVideo)          // Immediate count update
-		protected.POST("/videos/:videoId/share", videoHandler.ShareVideo)            // Immediate count update
-		protected.GET("/videos/:videoId/counts", videoHandler.GetVideoCountsSummary) // Real-time counts
-		protected.GET("/users/:userId/liked-videos", videoHandler.GetUserLikedVideos)
-		protected.GET("/videos/:videoId/analytics", videoHandler.GetVideoAnalytics) // Creator analytics
+		protected.POST("/videos/:videoId/like", videoHandler.LikeVideo)
+		protected.DELETE("/videos/:videoId/like", videoHandler.UnlikeVideo)
+		protected.POST("/videos/:videoId/share", videoHandler.ShareVideo)
+		protected.GET("/videos/recommendations", videoHandler.GetVideoRecommendations)
 
-		// ===== ENHANCED RECOMMENDATION SYSTEM =====
-		protected.GET("/videos/recommendations", videoHandler.GetVideoRecommendations) // Personalized
-
-		// ===== SOCIAL FEATURES =====
+		// ===== SOCIAL FEATURES (EXISTING) =====
 		protected.POST("/users/:userId/follow", videoHandler.FollowUser)
 		protected.DELETE("/users/:userId/follow", videoHandler.UnfollowUser)
 		protected.GET("/feed/following", videoHandler.GetFollowingFeed)
 
-		// ===== COMMENT MANAGEMENT =====
+		// ===== COMMENT MANAGEMENT (EXISTING) =====
 		protected.POST("/videos/:videoId/comments", videoHandler.CreateComment)
 		protected.DELETE("/comments/:commentId", videoHandler.DeleteComment)
 		protected.POST("/comments/:commentId/like", videoHandler.LikeComment)
 		protected.DELETE("/comments/:commentId/like", videoHandler.UnlikeComment)
 
-		// ===== CONTENT REPORTING =====
-		protected.POST("/videos/:videoId/report", videoHandler.ReportVideo)
+		// ===== 📱 NEW: CHAT ENDPOINTS =====
+		chatRoutes := protected.Group("/chats")
+		{
+			// Chat management
+			chatRoutes.POST("", chatHandler.CreateOrGetChat) // Create/get chat
+			chatRoutes.GET("", chatHandler.GetChats)         // Get user's chats
+			chatRoutes.GET("/:chatId", chatHandler.GetChat)  // Get specific chat
 
-		// ===== ANALYTICS =====
-		protected.GET("/stats/videos", videoHandler.GetVideoStats)
+			// Chat settings
+			chatRoutes.POST("/:chatId/mark-read", chatHandler.MarkChatAsRead)         // Mark as read
+			chatRoutes.POST("/:chatId/toggle-pin", chatHandler.TogglePinChat)         // Pin/unpin
+			chatRoutes.POST("/:chatId/toggle-archive", chatHandler.ToggleArchiveChat) // Archive
+			chatRoutes.POST("/:chatId/toggle-mute", chatHandler.ToggleMuteChat)       // Mute/unmute
+			chatRoutes.POST("/:chatId/settings", chatHandler.SetChatSettings)         // Wallpaper, font
 
-		// ===== WALLET ENDPOINTS =====
+			// Message management
+			chatRoutes.POST("/:chatId/messages", chatHandler.SendMessage)                // Send message
+			chatRoutes.GET("/:chatId/messages", chatHandler.GetMessages)                 // Get messages
+			chatRoutes.PUT("/:chatId/messages/:messageId", chatHandler.UpdateMessage)    // Edit message
+			chatRoutes.DELETE("/:chatId/messages/:messageId", chatHandler.DeleteMessage) // Delete message
+
+			// Special message types
+			chatRoutes.POST("/:chatId/video-reaction", chatHandler.SendVideoReaction)   // Video reactions
+			chatRoutes.POST("/:chatId/moment-reaction", chatHandler.SendMomentReaction) // Moment reactions
+		}
+
+		// ===== 📱 NEW: CONTACT ENDPOINTS =====
+		contactRoutes := protected.Group("/contacts")
+		{
+			// Contact management
+			contactRoutes.GET("", contactHandler.GetContacts)                 // Get contacts
+			contactRoutes.POST("", contactHandler.AddContact)                 // Add contact
+			contactRoutes.DELETE("/:contactId", contactHandler.RemoveContact) // Remove contact
+
+			// Contact search and sync
+			contactRoutes.POST("/search", contactHandler.SearchContacts)         // Search by phone numbers
+			contactRoutes.POST("/sync", contactHandler.SyncContacts)             // Sync device contacts
+			contactRoutes.GET("/search/phone", contactHandler.SearchUserByPhone) // Search by single phone
+
+			// Blocking
+			contactRoutes.POST("/block", contactHandler.BlockContact)        // Block contact
+			contactRoutes.POST("/unblock", contactHandler.UnblockContact)    // Unblock contact
+			contactRoutes.GET("/blocked", contactHandler.GetBlockedContacts) // Get blocked contacts
+		}
+
+		// ===== WALLET ENDPOINTS (EXISTING) =====
 		protected.GET("/wallet/:userId", walletHandler.GetWallet)
 		protected.GET("/wallet/:userId/transactions", walletHandler.GetTransactions)
 		protected.POST("/wallet/:userId/purchase-request", walletHandler.CreatePurchaseRequest)
 
-		// ===== FILE UPLOAD =====
+		// ===== FILE UPLOAD (EXISTING) =====
 		protected.POST("/upload", uploadHandler.UploadFile)
 		protected.POST("/upload/batch", uploadHandler.BatchUploadFiles)
-		protected.GET("/upload/health", uploadHandler.HealthCheck)
 
 		// ===============================
-		// 🚀 OPTIMIZED ADMIN ROUTES
+		// ADMIN ROUTES
 		// ===============================
 		admin := protected.Group("")
 		admin.Use(middleware.AdminOnly())
 		{
-			// ===== VIDEO MODERATION =====
+			// Video moderation (existing)
 			admin.POST("/admin/videos/:videoId/featured", videoHandler.ToggleFeatured)
 			admin.POST("/admin/videos/:videoId/active", videoHandler.ToggleActive)
 
-			// ===== PERFORMANCE MANAGEMENT =====
-			admin.POST("/admin/videos/batch-update-counts", videoHandler.BatchUpdateCounts) // Batch operations
-
-			// ===== USER MANAGEMENT (ADMIN) =====
+			// User management (existing)
 			admin.GET("/admin/users", userHandler.GetAllUsers)
 			admin.POST("/admin/users/:userId/status", userHandler.UpdateUserStatus)
 
-			// ===== WALLET MANAGEMENT (ADMIN) =====
+			// Wallet management (existing)
 			admin.POST("/admin/wallet/:userId/add-coins", walletHandler.AddCoins)
 			admin.GET("/admin/purchase-requests", walletHandler.GetPendingPurchases)
 			admin.POST("/admin/purchase-requests/:requestId/approve", walletHandler.ApprovePurchase)
 			admin.POST("/admin/purchase-requests/:requestId/reject", walletHandler.RejectPurchase)
 
-			// ===== ENHANCED PLATFORM ANALYTICS =====
+			// ===== 📱 NEW: CHAT & CONTACT MODERATION =====
+			//chatAdmin := admin.Group("/admin/chats")
+			//{
+			// Chat moderation endpoints can be added here
+			// chatAdmin.GET("", adminChatHandler.GetAllChats)              // Future: Get all chats
+			// chatAdmin.DELETE("/:chatId", adminChatHandler.DeleteChat)    // Future: Delete chat
+			// chatAdmin.GET("/reports", adminChatHandler.GetChatReports)   // Future: Chat reports
+			//}
+
+			//contactAdmin := admin.Group("/admin/contacts")
+			//{
+			// Contact moderation endpoints can be added here
+			// contactAdmin.GET("/blocked", adminContactHandler.GetAllBlocked) // Future: All blocked users
+			// contactAdmin.GET("/reports", adminContactHandler.GetReports)     // Future: Contact reports
+			//}
+
+			// Enhanced platform analytics
 			admin.GET("/admin/stats", func(c *gin.Context) {
-				c.Header("Cache-Control", "public, max-age=300") // 5min cache
+				c.Header("Cache-Control", "public, max-age=300")
 				dbStats := database.Stats()
 
 				c.JSON(200, gin.H{
-					"message": "Platform statistics endpoint",
+					"message": "Enhanced platform statistics",
 					"features": gin.H{
-						"videos":            "enabled + optimized",
-						"gzip_compression":  true,
-						"rate_limiting":     true,
-						"bulk_endpoints":    true,
-						"streaming_headers": true,
-						"url_optimization":  true,
-						"smart_caching":     true,
+						"videos":             "enabled + optimized",
+						"chat":               "enabled + real-time",
+						"contacts":           "enabled + sync",
+						"wallet":             "enabled",
+						"gzip_compression":   true,
+						"rate_limiting":      true,
+						"bulk_endpoints":     true,
+						"streaming_headers":  true,
+						"url_optimization":   true,
+						"real_time_features": true,
 					},
 					"status": "operational",
 					"performance": gin.H{
@@ -475,16 +549,16 @@ func setupOptimizedRoutes(
 							"open":     dbStats.OpenConnections,
 							"in_use":   dbStats.InUse,
 							"idle":     dbStats.Idle,
-							"max_open": 50,
-							"max_idle": 25,
+							"max_open": 75,
+							"max_idle": 35,
 						},
-						"optimizations_active":  7,
-						"estimated_improvement": "80% faster loading",
+						"optimizations_active":  8,
+						"estimated_improvement": "Enhanced for real-time features",
 					},
 				})
 			})
 
-			// ===== SYSTEM HEALTH WITH PERFORMANCE METRICS =====
+			// System health with enhanced metrics
 			admin.GET("/admin/health", func(c *gin.Context) {
 				c.Header("Cache-Control", "no-cache")
 				dbStats := database.Stats()
@@ -495,9 +569,9 @@ func setupOptimizedRoutes(
 						"open_connections": dbStats.OpenConnections,
 						"in_use":           dbStats.InUse,
 						"idle":             dbStats.Idle,
-						"max_open":         50,
-						"max_idle":         25,
-						"optimized_for":    "video_workload",
+						"max_open":         75,
+						"max_idle":         35,
+						"optimized_for":    "video + chat workload",
 					},
 					"firebase": gin.H{
 						"status": "initialized",
@@ -507,6 +581,14 @@ func setupOptimizedRoutes(
 						"type":           "cloudflare-r2",
 						"optimized_urls": true,
 					},
+					"features": gin.H{
+						"videos":           true,
+						"real_time_chat":   true,
+						"contact_sync":     true,
+						"wallet_system":    true,
+						"video_reactions":  true,
+						"moment_reactions": true,
+					},
 					"performance": gin.H{
 						"gzip_compression":   true,
 						"rate_limiting":      true,
@@ -515,13 +597,16 @@ func setupOptimizedRoutes(
 						"url_optimization":   true,
 						"smart_caching":      true,
 						"connection_pooling": true,
+						"real_time_features": true,
 					},
 					"app": gin.H{
-						"name":                  "video-social-media-optimized",
-						"version":               "1.1.0-performance",
-						"status":                "healthy",
-						"features":              []string{"videos", "wallet", "social", "performance"},
-						"estimated_improvement": "80% faster loading times",
+						"name":    "video-social-media-with-chat",
+						"version": "1.2.0-chat-contacts",
+						"status":  "healthy",
+						"features": []string{
+							"videos", "chat", "contacts", "wallet",
+							"real-time", "performance-optimized",
+						},
 					},
 				})
 			})
@@ -529,163 +614,107 @@ func setupOptimizedRoutes(
 	}
 
 	// ===============================
-	// 🚀 ENHANCED DEVELOPMENT ROUTES
+	// ENHANCED DEVELOPMENT ROUTES
 	// ===============================
 	if gin.Mode() == gin.DebugMode {
 		debug := api.Group("/debug")
 		{
-			debug.GET("/routes", func(c *gin.Context) {
-				routes := router.Routes()
-				routeList := make([]gin.H, len(routes))
-				for i, route := range routes {
-					routeList[i] = gin.H{
-						"method": route.Method,
-						"path":   route.Path,
-					}
-				}
-				c.JSON(200, gin.H{
-					"total":  len(routes),
-					"routes": routeList,
-				})
-			})
-
-			debug.GET("/performance", func(c *gin.Context) {
-				dbStats := database.Stats()
-				c.JSON(200, gin.H{
-					"optimizations": gin.H{
-						"gzip_compression": gin.H{
-							"enabled":     true,
-							"compression": "default",
-							"excluded":    []string{".mp4", ".avi", ".mov", ".webm"},
-							"benefit":     "~70% size reduction for JSON responses",
-						},
-						"rate_limiting": gin.H{
-							"enabled":       true,
-							"video_lists":   "100 req/min",
-							"bulk_endpoint": "30 req/min",
-							"other":         "200 req/min",
-							"cleanup":       "every 5 minutes",
-						},
-						"database_pool": gin.H{
-							"max_open":       50,
-							"max_idle":       25,
-							"current_open":   dbStats.OpenConnections,
-							"current_in_use": dbStats.InUse,
-							"current_idle":   dbStats.Idle,
-							"optimized_for":  "video workload (read-heavy)",
-						},
-						"caching_strategy": gin.H{
-							"video_content":     "1-3 hours",
-							"video_lists":       "15 minutes",
-							"individual_videos": "30 minutes",
-							"comments":          "5 minutes",
-							"interactions":      "no cache (real-time)",
-						},
-						"streaming_headers": gin.H{
-							"accept_ranges":    true,
-							"cache_control":    true,
-							"connection":       "keep-alive",
-							"security_headers": true,
-						},
-						"url_optimization": gin.H{
-							"enabled":       true,
-							"cloudflare_r2": "cf_optimize=true",
-							"thumbnails":    "webp, quality=85, width=640",
-							"streaming":     "stream=true parameter",
-						},
-						"bulk_endpoints": gin.H{
-							"enabled":    true,
-							"max_videos": 50,
-							"endpoint":   "POST /videos/bulk",
-							"benefit":    "Reduces API calls by up to 50x",
-						},
-					},
-					"estimated_benefits": gin.H{
-						"response_size_reduction": "~70% (gzip)",
-						"api_calls_reduction":     "up to 50x (bulk endpoints)",
-						"loading_speed":           "80% faster",
-						"database_efficiency":     "optimized connection pooling",
-						"cdn_performance":         "optimized URLs for R2/Cloudflare",
-					},
-				})
-			})
-
-			debug.GET("/config", func(c *gin.Context) {
-				c.JSON(200, gin.H{
-					"environment": gin.Mode(),
-					"database":    "connected + optimized",
-					"firebase":    "initialized",
-					"storage":     "r2-connected + url-optimized",
-					"features": gin.H{
-						"videos": gin.H{
-							"enabled":      true,
-							"creation":     "all authenticated users",
-							"interactions": "likes, comments, shares, follows",
-							"bulk_fetch":   "up to 50 videos per request",
-							"streaming":    "optimized headers",
-							"caching":      "smart TTL per endpoint",
-						},
-						"wallet": gin.H{
-							"enabled":      true,
-							"transactions": true,
-							"purchases":    "admin approval required",
-						},
-						"performance": gin.H{
-							"gzip_compression":   true,
-							"rate_limiting":      true,
-							"connection_pooling": true,
-							"bulk_endpoints":     true,
-							"streaming_headers":  true,
-							"url_optimization":   true,
-							"smart_caching":      true,
-						},
-					},
-				})
-			})
-
 			debug.GET("/features", func(c *gin.Context) {
 				c.JSON(200, gin.H{
-					"video_endpoints": gin.H{
-						"public": []string{
-							"GET /videos - list videos (15min cache)",
-							"GET /videos/featured - featured videos (15min cache)",
-							"GET /videos/trending - trending videos (15min cache)",
-							"GET /videos/:id - get specific video (30min cache)",
-							"GET /videos/:id/comments - video comments (5min cache)",
-							"POST /videos/bulk - bulk fetch up to 50 videos",
-							"GET /videos/:id/qualities - video qualities (future)",
-						},
-						"authenticated": []string{
-							"POST /videos - create video (enhanced validation)",
-							"PUT /videos/:id - update video",
-							"DELETE /videos/:id - delete video",
-							"POST /videos/:id/like - like video (immediate count)",
-							"POST /videos/:id/comments - add comment",
-							"GET /videos/recommendations - personalized feed",
-							"GET /videos/:id/analytics - creator analytics",
+					"video_social_media": gin.H{
+						"enabled": true,
+						"endpoints": []string{
+							"GET /videos - list videos",
+							"POST /videos - create video",
+							"GET /videos/:id - get video",
+							"POST /videos/:id/like - like video",
+							"POST /videos/:id/comments - comment",
 						},
 					},
-					"performance_features": gin.H{
-						"compression":        "Gzip compression (~70% size reduction)",
-						"rate_limiting":      "Smart limits per endpoint type",
-						"bulk_operations":    "Fetch up to 50 videos in single request",
-						"streaming_headers":  "Optimized for video content delivery",
-						"url_optimization":   "CDN/R2 optimized URLs",
-						"smart_caching":      "Different TTLs for different content types",
-						"connection_pooling": "Optimized for video workload",
+					"real_time_chat": gin.H{
+						"enabled": true,
+						"endpoints": []string{
+							"POST /chats - create/get chat",
+							"GET /chats - list user chats",
+							"POST /chats/:id/messages - send message",
+							"GET /chats/:id/messages - get messages",
+							"POST /chats/:id/video-reaction - send video reaction",
+							"POST /chats/:id/moment-reaction - send moment reaction",
+						},
 					},
-					"auth_flow": gin.H{
-						"public_sync":    "POST /auth/sync (no auth required - for new users)",
-						"protected_sync": "POST /auth/profile-sync (auth required - for updates)",
-						"get_user":       "GET /auth/user (auth required)",
-						"verify_token":   "POST /auth/verify (no auth required)",
+					"contact_management": gin.H{
+						"enabled": true,
+						"endpoints": []string{
+							"GET /contacts - get contacts",
+							"POST /contacts - add contact",
+							"POST /contacts/sync - sync device contacts",
+							"POST /contacts/search - search registered users",
+							"POST /contacts/block - block user",
+							"GET /contacts/blocked - get blocked users",
+						},
 					},
-					"permission_levels": gin.H{
-						"public":        "view content, no auth required",
-						"authenticated": "create videos, interact with content",
-						"admin":         "moderate content, manage users, approve purchases",
+					"wallet_system": gin.H{
+						"enabled": true,
+						"endpoints": []string{
+							"GET /wallet/:userId - get wallet",
+							"POST /wallet/:userId/purchase-request - request coins",
+						},
 					},
-					"estimated_improvement": "80% faster loading with these optimizations",
+					"performance_optimizations": gin.H{
+						"gzip_compression":       "~70% size reduction",
+						"enhanced_rate_limiting": "300 req/min for chat",
+						"connection_pooling":     "75 max connections for real-time",
+						"bulk_endpoints":         "50 videos per request",
+						"streaming_headers":      "optimized for video + chat",
+						"jsonb_support":          "efficient chat metadata storage",
+					},
+				})
+			})
+
+			debug.GET("/chat-examples", func(c *gin.Context) {
+				c.JSON(200, gin.H{
+					"create_chat": gin.H{
+						"method":   "POST",
+						"endpoint": "/chats",
+						"body": gin.H{
+							"participants": []string{"user1", "user2"},
+						},
+					},
+					"send_message": gin.H{
+						"method":   "POST",
+						"endpoint": "/chats/:chatId/messages",
+						"body": gin.H{
+							"content": "Hello!",
+							"type":    "text",
+						},
+					},
+					"send_video_reaction": gin.H{
+						"method":   "POST",
+						"endpoint": "/chats/:chatId/video-reaction",
+						"body": gin.H{
+							"videoId":      "video123",
+							"videoUrl":     "https://example.com/video.mp4",
+							"thumbnailUrl": "https://example.com/thumb.jpg",
+							"channelName":  "Creator Name",
+							"channelImage": "https://example.com/avatar.jpg",
+							"reaction":     "😍 Amazing video!",
+						},
+					},
+					"sync_contacts": gin.H{
+						"method":   "POST",
+						"endpoint": "/contacts/sync",
+						"body": gin.H{
+							"deviceContacts": []gin.H{
+								{
+									"id":          "contact1",
+									"displayName": "John Doe",
+									"phoneNumbers": []gin.H{
+										{"number": "+1234567890", "label": "mobile"},
+									},
+								},
+							},
+						},
+					},
 				})
 			})
 		}
