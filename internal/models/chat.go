@@ -1,5 +1,5 @@
 // ===============================
-// internal/models/chat.go - Updated Chat and Message Models (User-Based, No Moments)
+// internal/models/chat.go - FIXED Chat and Message Models with Proper JSON Serialization
 // ===============================
 
 package models
@@ -16,7 +16,7 @@ type StringMap map[string]string
 
 func (m StringMap) Value() (driver.Value, error) {
 	if m == nil {
-		return nil, nil
+		return json.Marshal(map[string]string{})
 	}
 	return json.Marshal(m)
 }
@@ -30,7 +30,39 @@ func (m *StringMap) Scan(value interface{}) error {
 	if !ok {
 		return fmt.Errorf("cannot scan %T into StringMap", value)
 	}
-	return json.Unmarshal(bytes, m)
+
+	var temp map[string]string
+	if err := json.Unmarshal(bytes, &temp); err != nil {
+		return err
+	}
+
+	if temp == nil {
+		*m = make(StringMap)
+	} else {
+		*m = StringMap(temp)
+	}
+	return nil
+}
+
+func (m StringMap) MarshalJSON() ([]byte, error) {
+	if m == nil {
+		return json.Marshal(map[string]string{})
+	}
+	return json.Marshal(map[string]string(m))
+}
+
+func (m *StringMap) UnmarshalJSON(data []byte) error {
+	var temp map[string]string
+	if err := json.Unmarshal(data, &temp); err != nil {
+		return err
+	}
+
+	if temp == nil {
+		*m = make(StringMap)
+	} else {
+		*m = StringMap(temp)
+	}
+	return nil
 }
 
 // BoolMap represents a map[string]bool that can be stored in PostgreSQL as JSONB
@@ -38,7 +70,7 @@ type BoolMap map[string]bool
 
 func (m BoolMap) Value() (driver.Value, error) {
 	if m == nil {
-		return nil, nil
+		return json.Marshal(map[string]bool{})
 	}
 	return json.Marshal(m)
 }
@@ -52,7 +84,39 @@ func (m *BoolMap) Scan(value interface{}) error {
 	if !ok {
 		return fmt.Errorf("cannot scan %T into BoolMap", value)
 	}
-	return json.Unmarshal(bytes, m)
+
+	var temp map[string]bool
+	if err := json.Unmarshal(bytes, &temp); err != nil {
+		return err
+	}
+
+	if temp == nil {
+		*m = make(BoolMap)
+	} else {
+		*m = BoolMap(temp)
+	}
+	return nil
+}
+
+func (m BoolMap) MarshalJSON() ([]byte, error) {
+	if m == nil {
+		return json.Marshal(map[string]bool{})
+	}
+	return json.Marshal(map[string]bool(m))
+}
+
+func (m *BoolMap) UnmarshalJSON(data []byte) error {
+	var temp map[string]bool
+	if err := json.Unmarshal(data, &temp); err != nil {
+		return err
+	}
+
+	if temp == nil {
+		*m = make(BoolMap)
+	} else {
+		*m = BoolMap(temp)
+	}
+	return nil
 }
 
 // FloatMap represents a map[string]float64 that can be stored in PostgreSQL as JSONB
@@ -60,7 +124,7 @@ type FloatMap map[string]float64
 
 func (m FloatMap) Value() (driver.Value, error) {
 	if m == nil {
-		return nil, nil
+		return json.Marshal(map[string]float64{})
 	}
 	return json.Marshal(m)
 }
@@ -74,7 +138,39 @@ func (m *FloatMap) Scan(value interface{}) error {
 	if !ok {
 		return fmt.Errorf("cannot scan %T into FloatMap", value)
 	}
-	return json.Unmarshal(bytes, m)
+
+	var temp map[string]float64
+	if err := json.Unmarshal(bytes, &temp); err != nil {
+		return err
+	}
+
+	if temp == nil {
+		*m = make(FloatMap)
+	} else {
+		*m = FloatMap(temp)
+	}
+	return nil
+}
+
+func (m FloatMap) MarshalJSON() ([]byte, error) {
+	if m == nil {
+		return json.Marshal(map[string]float64{})
+	}
+	return json.Marshal(map[string]float64(m))
+}
+
+func (m *FloatMap) UnmarshalJSON(data []byte) error {
+	var temp map[string]float64
+	if err := json.Unmarshal(data, &temp); err != nil {
+		return err
+	}
+
+	if temp == nil {
+		*m = make(FloatMap)
+	} else {
+		*m = FloatMap(temp)
+	}
+	return nil
 }
 
 // TimeMap represents a map[string]time.Time that can be stored in PostgreSQL as JSONB
@@ -82,7 +178,7 @@ type TimeMap map[string]time.Time
 
 func (m TimeMap) Value() (driver.Value, error) {
 	if m == nil {
-		return nil, nil
+		return json.Marshal(map[string]string{})
 	}
 	// Convert times to RFC3339 strings for JSON storage
 	stringMap := make(map[string]string)
@@ -104,6 +200,33 @@ func (m *TimeMap) Scan(value interface{}) error {
 
 	var stringMap map[string]string
 	if err := json.Unmarshal(bytes, &stringMap); err != nil {
+		return err
+	}
+
+	*m = make(TimeMap)
+	for k, v := range stringMap {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			(*m)[k] = t
+		}
+	}
+	return nil
+}
+
+func (m TimeMap) MarshalJSON() ([]byte, error) {
+	if m == nil {
+		return json.Marshal(map[string]string{})
+	}
+	// Convert times to RFC3339 strings for JSON
+	stringMap := make(map[string]string)
+	for k, v := range m {
+		stringMap[k] = v.Format(time.RFC3339)
+	}
+	return json.Marshal(stringMap)
+}
+
+func (m *TimeMap) UnmarshalJSON(data []byte) error {
+	var stringMap map[string]string
+	if err := json.Unmarshal(data, &stringMap); err != nil {
 		return err
 	}
 
@@ -143,14 +266,14 @@ type Message struct {
 	Type             string                 `json:"type" db:"type"`
 	Status           string                 `json:"status" db:"status"`
 	Timestamp        time.Time              `json:"timestamp" db:"timestamp"`
-	MediaURL         *string                `json:"mediaUrl" db:"media_url"`
-	MediaMetadata    map[string]interface{} `json:"mediaMetadata" db:"media_metadata"`
-	ReplyToMessageID *string                `json:"replyToMessageId" db:"reply_to_message_id"`
-	ReplyToContent   *string                `json:"replyToContent" db:"reply_to_content"`
-	ReplyToSender    *string                `json:"replyToSender" db:"reply_to_sender"`
+	MediaURL         *string                `json:"mediaUrl,omitempty" db:"media_url"`
+	MediaMetadata    map[string]interface{} `json:"mediaMetadata,omitempty" db:"media_metadata"`
+	ReplyToMessageID *string                `json:"replyToMessageId,omitempty" db:"reply_to_message_id"`
+	ReplyToContent   *string                `json:"replyToContent,omitempty" db:"reply_to_content"`
+	ReplyToSender    *string                `json:"replyToSender,omitempty" db:"reply_to_sender"`
 	Reactions        StringMap              `json:"reactions" db:"reactions"`
 	IsEdited         bool                   `json:"isEdited" db:"is_edited"`
-	EditedAt         *time.Time             `json:"editedAt" db:"edited_at"`
+	EditedAt         *time.Time             `json:"editedAt,omitempty" db:"edited_at"`
 	IsPinned         bool                   `json:"isPinned" db:"is_pinned"`
 	ReadBy           TimeMap                `json:"readBy" db:"read_by"`
 	DeliveredTo      TimeMap                `json:"deliveredTo" db:"delivered_to"`
@@ -172,7 +295,7 @@ type ChatParticipant struct {
 	ChatID   string     `json:"chatId" db:"chat_id"`
 	UserID   string     `json:"userId" db:"user_id"`
 	JoinedAt time.Time  `json:"joinedAt" db:"joined_at"`
-	LeftAt   *time.Time `json:"leftAt" db:"left_at"`
+	LeftAt   *time.Time `json:"leftAt,omitempty" db:"left_at"`
 }
 
 // Helper methods for Chat
