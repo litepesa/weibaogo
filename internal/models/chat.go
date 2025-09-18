@@ -239,6 +239,60 @@ func (m *TimeMap) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// JSONMap represents a map[string]interface{} that can be stored in PostgreSQL as JSONB
+type JSONMap map[string]interface{}
+
+func (m JSONMap) Value() (driver.Value, error) {
+	if m == nil {
+		return json.Marshal(map[string]interface{}{})
+	}
+	return json.Marshal(m)
+}
+
+func (m *JSONMap) Scan(value interface{}) error {
+	if value == nil {
+		*m = make(JSONMap)
+		return nil
+	}
+	bytes, ok := value.([]byte)
+	if !ok {
+		return fmt.Errorf("cannot scan %T into JSONMap", value)
+	}
+
+	var temp map[string]interface{}
+	if err := json.Unmarshal(bytes, &temp); err != nil {
+		return err
+	}
+
+	if temp == nil {
+		*m = make(JSONMap)
+	} else {
+		*m = JSONMap(temp)
+	}
+	return nil
+}
+
+func (m JSONMap) MarshalJSON() ([]byte, error) {
+	if m == nil {
+		return json.Marshal(map[string]interface{}{})
+	}
+	return json.Marshal(map[string]interface{}(m))
+}
+
+func (m *JSONMap) UnmarshalJSON(data []byte) error {
+	var temp map[string]interface{}
+	if err := json.Unmarshal(data, &temp); err != nil {
+		return err
+	}
+
+	if temp == nil {
+		*m = make(JSONMap)
+	} else {
+		*m = JSONMap(temp)
+	}
+	return nil
+}
+
 // Chat represents a chat conversation between users
 type Chat struct {
 	ChatID            string      `json:"chatId" db:"chat_id"`
@@ -259,25 +313,25 @@ type Chat struct {
 
 // Message represents a chat message between users
 type Message struct {
-	MessageID        string                 `json:"messageId" db:"message_id"`
-	ChatID           string                 `json:"chatId" db:"chat_id"`
-	SenderID         string                 `json:"senderId" db:"sender_id"`
-	Content          string                 `json:"content" db:"content"`
-	Type             string                 `json:"type" db:"type"`
-	Status           string                 `json:"status" db:"status"`
-	Timestamp        time.Time              `json:"timestamp" db:"timestamp"`
-	MediaURL         *string                `json:"mediaUrl,omitempty" db:"media_url"`
-	MediaMetadata    map[string]interface{} `json:"mediaMetadata,omitempty" db:"media_metadata"`
-	ReplyToMessageID *string                `json:"replyToMessageId,omitempty" db:"reply_to_message_id"`
-	ReplyToContent   *string                `json:"replyToContent,omitempty" db:"reply_to_content"`
-	ReplyToSender    *string                `json:"replyToSender,omitempty" db:"reply_to_sender"`
-	Reactions        StringMap              `json:"reactions" db:"reactions"`
-	IsEdited         bool                   `json:"isEdited" db:"is_edited"`
-	EditedAt         *time.Time             `json:"editedAt,omitempty" db:"edited_at"`
-	IsPinned         bool                   `json:"isPinned" db:"is_pinned"`
-	ReadBy           TimeMap                `json:"readBy" db:"read_by"`
-	DeliveredTo      TimeMap                `json:"deliveredTo" db:"delivered_to"`
-	CreatedAt        time.Time              `json:"createdAt" db:"created_at"`
+	MessageID        string     `json:"messageId" db:"message_id"`
+	ChatID           string     `json:"chatId" db:"chat_id"`
+	SenderID         string     `json:"senderId" db:"sender_id"`
+	Content          string     `json:"content" db:"content"`
+	Type             string     `json:"type" db:"type"`
+	Status           string     `json:"status" db:"status"`
+	Timestamp        time.Time  `json:"timestamp" db:"timestamp"`
+	MediaURL         *string    `json:"mediaUrl,omitempty" db:"media_url"`
+	MediaMetadata    JSONMap    `json:"mediaMetadata,omitempty" db:"media_metadata"`
+	ReplyToMessageID *string    `json:"replyToMessageId,omitempty" db:"reply_to_message_id"`
+	ReplyToContent   *string    `json:"replyToContent,omitempty" db:"reply_to_content"`
+	ReplyToSender    *string    `json:"replyToSender,omitempty" db:"reply_to_sender"`
+	Reactions        StringMap  `json:"reactions" db:"reactions"`
+	IsEdited         bool       `json:"isEdited" db:"is_edited"`
+	EditedAt         *time.Time `json:"editedAt,omitempty" db:"edited_at"`
+	IsPinned         bool       `json:"isPinned" db:"is_pinned"`
+	ReadBy           TimeMap    `json:"readBy" db:"read_by"`
+	DeliveredTo      TimeMap    `json:"deliveredTo" db:"delivered_to"`
+	CreatedAt        time.Time  `json:"createdAt" db:"created_at"`
 }
 
 // MessageReaction represents a reaction to a message
@@ -428,11 +482,11 @@ type CreateChatRequest struct {
 }
 
 type SendMessageRequest struct {
-	Content          string                 `json:"content" binding:"required"`
-	Type             string                 `json:"type,omitempty"`
-	MediaURL         string                 `json:"mediaUrl,omitempty"`
-	MediaMetadata    map[string]interface{} `json:"mediaMetadata,omitempty"`
-	ReplyToMessageID string                 `json:"replyToMessageId,omitempty"`
+	Content          string  `json:"content" binding:"required"`
+	Type             string  `json:"type,omitempty"`
+	MediaURL         string  `json:"mediaUrl,omitempty"`
+	MediaMetadata    JSONMap `json:"mediaMetadata,omitempty"`
+	ReplyToMessageID string  `json:"replyToMessageId,omitempty"`
 }
 
 type UpdateMessageRequest struct {

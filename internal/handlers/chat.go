@@ -1,5 +1,5 @@
 // ===============================
-// internal/handlers/chat.go - FIXED Chat Handler with Comprehensive Error Handling and Logging
+// internal/handlers/chat.go - FIXED Chat Handler with Auto-Create on Send
 // ===============================
 
 package handlers
@@ -200,7 +200,7 @@ func (h *ChatHandler) GetChat(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"chat": chat})
 }
 
-// SendMessage sends a message in a chat
+// SendMessage sends a message in a chat - FIXED with auto-create
 func (h *ChatHandler) SendMessage(c *gin.Context) {
 	chatID := c.Param("chatId")
 	if chatID == "" {
@@ -258,15 +258,44 @@ func (h *ChatHandler) SendMessage(c *gin.Context) {
 		return
 	}
 
-	// Verify chat exists and user is participant
+	// FIXED: Try to get chat, if not found, create it automatically
 	chat, err := h.chatService.GetChat(chatID)
 	if err != nil {
-		log.Printf("SendMessage: Chat not found: %v", err)
-		c.JSON(http.StatusNotFound, gin.H{"error": "Chat not found"})
-		return
+		log.Printf("SendMessage: Chat not found, attempting to create from chatID: %s", chatID)
+
+		// Extract participants from chatID (format: user1_user2)
+		participants := strings.Split(chatID, "_")
+		if len(participants) != 2 {
+			log.Printf("SendMessage: Invalid chat ID format: %s", chatID)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid chat ID format"})
+			return
+		}
+
+		// Verify sender is one of the participants
+		senderIsParticipant := false
+		for _, p := range participants {
+			if p == senderID {
+				senderIsParticipant = true
+				break
+			}
+		}
+		if !senderIsParticipant {
+			log.Printf("SendMessage: Sender %s not in chat participants %v", senderID, participants)
+			c.JSON(http.StatusForbidden, gin.H{"error": "You are not a participant in this chat"})
+			return
+		}
+
+		// Create the chat
+		chat, err = h.chatService.CreateOrGetChat(participants)
+		if err != nil {
+			log.Printf("SendMessage: Failed to create chat: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create chat", "details": err.Error()})
+			return
+		}
+		log.Printf("SendMessage: Chat created successfully: %s", chatID)
 	}
 
-	// Check if user is participant
+	// Verify user is participant
 	isParticipant := false
 	for _, participant := range chat.Participants {
 		if participant == senderID {
@@ -320,7 +349,7 @@ func (h *ChatHandler) SendMessage(c *gin.Context) {
 
 	// Initialize metadata if nil
 	if message.MediaMetadata == nil {
-		message.MediaMetadata = make(map[string]interface{})
+		message.MediaMetadata = make(models.JSONMap)
 	}
 
 	log.Printf("SendMessage: Calling service to send message")

@@ -1,11 +1,12 @@
 // ===============================
-// internal/services/chat.go - FIXED Chat Service with Proper Error Handling
+// internal/services/chat.go - FIXED Chat Service with Proper JSONB Handling
 // ===============================
 
 package services
 
 import (
 	"database/sql"
+	//"encoding/json"
 	"fmt"
 	"log"
 	"sort"
@@ -35,14 +36,14 @@ func (s *ChatService) GenerateChatID(participants []string) string {
 	return strings.Join(sorted, "_")
 }
 
-// CreateOrGetChat creates a new chat or returns existing one
+// CreateOrGetChat creates a new chat or returns existing one - FIXED with proper error handling
 func (s *ChatService) CreateOrGetChat(participants []string) (*models.Chat, error) {
 	log.Printf("Creating/getting chat for participants: %v", participants)
 
 	chatID := s.GenerateChatID(participants)
 	log.Printf("Generated chat ID: %s", chatID)
 
-	// Check if chat already exists
+	// First try to get existing chat
 	var existingChat models.Chat
 	err := s.db.Get(&existingChat, `
 		SELECT chat_id, participants, last_message, last_message_type, 
@@ -99,6 +100,14 @@ func (s *ChatService) CreateOrGetChat(participants []string) (*models.Chat, erro
 		UpdatedAt:         time.Now(),
 	}
 
+	// Start transaction
+	tx, err := s.db.Beginx()
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Insert chat
 	query := `
 		INSERT INTO chats (chat_id, participants, last_message, last_message_type,
 		                   last_message_sender, last_message_time, unread_counts,
@@ -107,9 +116,10 @@ func (s *ChatService) CreateOrGetChat(participants []string) (*models.Chat, erro
 		VALUES (:chat_id, :participants, :last_message, :last_message_type,
 		        :last_message_sender, :last_message_time, :unread_counts,
 		        :is_archived, :is_pinned, :is_muted, :chat_wallpapers,
-		        :font_sizes, :created_at, :updated_at)`
+		        :font_sizes, :created_at, :updated_at)
+		ON CONFLICT (chat_id) DO NOTHING`
 
-	_, err = s.db.NamedExec(query, chat)
+	_, err = tx.NamedExec(query, chat)
 	if err != nil {
 		log.Printf("Failed to create chat: %v", err)
 		return nil, fmt.Errorf("failed to create chat: %w", err)
@@ -117,14 +127,33 @@ func (s *ChatService) CreateOrGetChat(participants []string) (*models.Chat, erro
 
 	// Create chat participants entries
 	for _, participantID := range participants {
-		_, err = s.db.Exec(`
-			INSERT INTO chat_participants (chat_id, user_id, joined_at)
-			VALUES ($1, $2, $3)`,
-			chatID, participantID, time.Now())
+		var exists bool
+		err = tx.QueryRow(`
+			SELECT EXISTS(
+				SELECT 1 FROM chat_participants 
+				WHERE chat_id = $1 AND user_id = $2
+			)`, chatID, participantID).Scan(&exists)
+
 		if err != nil {
-			log.Printf("Failed to create chat participant: %v", err)
-			return nil, fmt.Errorf("failed to create chat participant: %w", err)
+			log.Printf("Failed to check chat participant existence: %v", err)
+			return nil, fmt.Errorf("failed to check chat participant: %w", err)
 		}
+
+		if !exists {
+			_, err = tx.Exec(`
+				INSERT INTO chat_participants (chat_id, user_id, joined_at)
+				VALUES ($1, $2, $3)`,
+				chatID, participantID, time.Now())
+			if err != nil {
+				log.Printf("Failed to create chat participant: %v", err)
+				return nil, fmt.Errorf("failed to create chat participant: %w", err)
+			}
+		}
+	}
+
+	// Commit the transaction
+	if err = tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit chat creation: %w", err)
 	}
 
 	log.Printf("Successfully created chat: %s", chatID)
@@ -176,7 +205,7 @@ func (s *ChatService) GetUserChats(userID string, limit, offset int) ([]models.C
 	return chats, nil
 }
 
-// SendMessage sends a message to a chat
+// SendMessage sends a message to a chat - FIXED with proper JSONB handling
 func (s *ChatService) SendMessage(message *models.Message) error {
 	log.Printf("Sending message to chat %s from user %s", message.ChatID, message.SenderID)
 
@@ -202,7 +231,7 @@ func (s *ChatService) SendMessage(message *models.Message) error {
 		message.DeliveredTo = make(models.TimeMap)
 	}
 	if message.MediaMetadata == nil {
-		message.MediaMetadata = make(map[string]interface{})
+		message.MediaMetadata = make(models.JSONMap)
 	}
 
 	tx, err := s.db.Beginx()
@@ -217,16 +246,86 @@ func (s *ChatService) SendMessage(message *models.Message) error {
 		}
 	}()
 
-	// Check if chat exists
+	// Check if chat exists, if not try to create it
 	var chatExists bool
 	err = tx.QueryRow("SELECT EXISTS(SELECT 1 FROM chats WHERE chat_id = $1)", message.ChatID).Scan(&chatExists)
 	if err != nil {
 		log.Printf("Failed to check if chat exists: %v", err)
 		return fmt.Errorf("failed to check chat existence: %w", err)
 	}
+
 	if !chatExists {
-		log.Printf("Chat does not exist: %s", message.ChatID)
-		return fmt.Errorf("chat not found: %s", message.ChatID)
+		log.Printf("Chat does not exist: %s - attempting to create it", message.ChatID)
+
+		participants := strings.Split(message.ChatID, "_")
+		if len(participants) == 2 {
+			unreadCounts := make(models.IntMap)
+			isArchived := make(models.BoolMap)
+			isPinned := make(models.BoolMap)
+			isMuted := make(models.BoolMap)
+			chatWallpapers := make(models.StringMap)
+			fontSizes := make(models.FloatMap)
+
+			for _, participantID := range participants {
+				unreadCounts[participantID] = 0
+				isArchived[participantID] = false
+				isPinned[participantID] = false
+				isMuted[participantID] = false
+				chatWallpapers[participantID] = ""
+				fontSizes[participantID] = 16.0
+			}
+
+			chat := &models.Chat{
+				ChatID:            message.ChatID,
+				Participants:      participants,
+				LastMessage:       "",
+				LastMessageType:   models.MessageTypeText,
+				LastMessageSender: "",
+				LastMessageTime:   time.Now(),
+				UnreadCounts:      unreadCounts,
+				IsArchived:        isArchived,
+				IsPinned:          isPinned,
+				IsMuted:           isMuted,
+				ChatWallpapers:    chatWallpapers,
+				FontSizes:         fontSizes,
+				CreatedAt:         time.Now(),
+				UpdatedAt:         time.Now(),
+			}
+
+			query := `
+				INSERT INTO chats (chat_id, participants, last_message, last_message_type,
+				                   last_message_sender, last_message_time, unread_counts,
+				                   is_archived, is_pinned, is_muted, chat_wallpapers,
+				                   font_sizes, created_at, updated_at)
+				VALUES (:chat_id, :participants, :last_message, :last_message_type,
+				        :last_message_sender, :last_message_time, :unread_counts,
+				        :is_archived, :is_pinned, :is_muted, :chat_wallpapers,
+				        :font_sizes, :created_at, :updated_at)
+				ON CONFLICT (chat_id) DO NOTHING`
+
+			_, err = tx.NamedExec(query, chat)
+			if err != nil {
+				log.Printf("Failed to auto-create chat: %v", err)
+				return fmt.Errorf("failed to auto-create chat: %w", err)
+			}
+
+			for _, participantID := range participants {
+				_, err = tx.Exec(`
+					INSERT INTO chat_participants (chat_id, user_id, joined_at)
+					VALUES ($1, $2, $3)
+					ON CONFLICT (chat_id, user_id) DO NOTHING`,
+					message.ChatID, participantID, time.Now())
+				if err != nil {
+					log.Printf("Failed to create chat participant: %v", err)
+					return fmt.Errorf("failed to create chat participant: %w", err)
+				}
+			}
+
+			log.Printf("Auto-created chat: %s", message.ChatID)
+		} else {
+			log.Printf("Invalid chatID format for auto-creation: %s", message.ChatID)
+			return fmt.Errorf("chat not found: %s", message.ChatID)
+		}
 	}
 
 	// Insert message
@@ -265,21 +364,26 @@ func (s *ChatService) SendMessage(message *models.Message) error {
 		return fmt.Errorf("failed to update chat last message: %w", err)
 	}
 
-	// Increment unread count for other participants
-	_, err = tx.Exec(`
-		UPDATE chats 
-		SET unread_counts = jsonb_set(
-			COALESCE(unread_counts, '{}'::jsonb),
-			'{' || (SELECT string_agg(participant, ',') 
-			        FROM unnest(participants) AS participant 
-			        WHERE participant != $1) || '}',
-			(COALESCE((unread_counts->>$1)::int, 0) + 1)::text::jsonb
-		)
-		WHERE chat_id = $2`,
-		message.SenderID, message.ChatID)
-	if err != nil {
-		log.Printf("Failed to update unread counts: %v", err)
-		// Don't fail the whole operation for this
+	// FIXED: Increment unread count for other participants - Simplified approach
+	// Get the chat to access participants
+	var chat models.Chat
+	err = tx.Get(&chat, "SELECT participants FROM chats WHERE chat_id = $1", message.ChatID)
+	if err == nil {
+		for _, participant := range chat.Participants {
+			if participant != message.SenderID {
+				// Update unread count for each other participant
+				_, err = tx.Exec(`
+                UPDATE chats 
+                SET unread_counts = COALESCE(unread_counts, '{}'::jsonb) || 
+                    jsonb_build_object($1::text, COALESCE((unread_counts->>$1::text)::int, 0) + 1)
+                WHERE chat_id = $2`,
+					participant, message.ChatID)
+				if err != nil {
+					log.Printf("Failed to update unread count for participant %s: %v", participant, err)
+					// Don't fail the whole operation for this
+				}
+			}
+		}
 	}
 
 	err = tx.Commit()
@@ -355,7 +459,6 @@ func (s *ChatService) DeleteMessage(messageID, senderID string, deleteForEveryon
 	log.Printf("Deleting message %s by user %s (deleteForEveryone: %v)", messageID, senderID, deleteForEveryone)
 
 	if deleteForEveryone {
-		// Delete for everyone
 		result, err := s.db.Exec(`
 			DELETE FROM messages 
 			WHERE message_id = $1 AND sender_id = $2`,
@@ -376,8 +479,6 @@ func (s *ChatService) DeleteMessage(messageID, senderID string, deleteForEveryon
 			return fmt.Errorf("message not found or permission denied")
 		}
 	} else {
-		// Just mark as deleted for sender (we could implement this with a deleted_for field)
-		// For now, we'll just delete completely
 		return s.DeleteMessage(messageID, senderID, true)
 	}
 
@@ -393,7 +494,6 @@ func (s *ChatService) MarkMessagesAsDelivered(chatID string, messageIDs []string
 
 	log.Printf("Marking %d messages as delivered for user %s in chat %s", len(messageIDs), userID, chatID)
 
-	// Build query for multiple message IDs
 	placeholders := make([]string, len(messageIDs))
 	args := make([]interface{}, len(messageIDs)+2)
 	args[0] = userID
@@ -438,8 +538,7 @@ func (s *ChatService) MarkChatAsRead(chatID, userID string) error {
 	// Reset unread count for user
 	_, err = tx.Exec(`
 		UPDATE chats 
-		SET unread_counts = COALESCE(unread_counts, '{}'::jsonb) || 
-		    jsonb_build_object($1, 0),
+		SET unread_counts = unread_counts || jsonb_build_object($1, 0),
 		    updated_at = $2
 		WHERE chat_id = $3`,
 		userID, time.Now(), chatID)
@@ -472,7 +571,7 @@ func (s *ChatService) MarkChatAsRead(chatID, userID string) error {
 	return nil
 }
 
-// ToggleChatPin toggles chat pin status
+// ToggleChatPin toggles chat pin status - FIXED JSONB handling
 func (s *ChatService) ToggleChatPin(chatID, userID string) error {
 	log.Printf("Toggling pin status for chat %s and user %s", chatID, userID)
 
@@ -497,7 +596,7 @@ func (s *ChatService) ToggleChatPin(chatID, userID string) error {
 	return nil
 }
 
-// ToggleChatArchive toggles chat archive status
+// ToggleChatArchive toggles chat archive status - FIXED JSONB handling
 func (s *ChatService) ToggleChatArchive(chatID, userID string) error {
 	log.Printf("Toggling archive status for chat %s and user %s", chatID, userID)
 
@@ -522,7 +621,7 @@ func (s *ChatService) ToggleChatArchive(chatID, userID string) error {
 	return nil
 }
 
-// ToggleChatMute toggles chat mute status
+// ToggleChatMute toggles chat mute status - FIXED JSONB handling
 func (s *ChatService) ToggleChatMute(chatID, userID string) error {
 	log.Printf("Toggling mute status for chat %s and user %s", chatID, userID)
 
@@ -551,59 +650,49 @@ func (s *ChatService) ToggleChatMute(chatID, userID string) error {
 func (s *ChatService) SetChatSettings(chatID, userID string, wallpaperURL *string, fontSize *float64) error {
 	log.Printf("Setting chat settings for chat %s and user %s", chatID, userID)
 
-	updateParts := []string{"updated_at = $2"}
-	args := []interface{}{userID, time.Now()}
-	argIndex := 3
-
 	if wallpaperURL != nil {
-		updateParts = append(updateParts, fmt.Sprintf(`
-			chat_wallpapers = COALESCE(chat_wallpapers, '{}'::jsonb) || 
-			jsonb_build_object($1, $%d)`, argIndex))
-		args = append(args, *wallpaperURL)
-		argIndex++
+		_, err := s.db.Exec(`
+			UPDATE chats 
+			SET chat_wallpapers = COALESCE(chat_wallpapers, '{}'::jsonb) || 
+			    jsonb_build_object($1, $2),
+			    updated_at = $3
+			WHERE chat_id = $4`,
+			userID, *wallpaperURL, time.Now(), chatID)
+		if err != nil {
+			log.Printf("Failed to update wallpaper: %v", err)
+			return fmt.Errorf("failed to update wallpaper: %w", err)
+		}
 	}
 
 	if fontSize != nil {
-		updateParts = append(updateParts, fmt.Sprintf(`
-			font_sizes = COALESCE(font_sizes, '{}'::jsonb) || 
-			jsonb_build_object($1, $%d)`, argIndex))
-		args = append(args, *fontSize)
-		argIndex++
-	}
-
-	if len(updateParts) == 1 {
-		log.Printf("No settings to update for chat %s", chatID)
-		return nil // No settings to update
-	}
-
-	query := fmt.Sprintf(`
-		UPDATE chats 
-		SET %s
-		WHERE chat_id = $%d`,
-		strings.Join(updateParts, ", "), argIndex)
-	args = append(args, chatID)
-
-	_, err := s.db.Exec(query, args...)
-	if err != nil {
-		log.Printf("Failed to update chat settings: %v", err)
-		return fmt.Errorf("failed to update chat settings: %w", err)
+		_, err := s.db.Exec(`
+			UPDATE chats 
+			SET font_sizes = COALESCE(font_sizes, '{}'::jsonb) || 
+			    jsonb_build_object($1, $2),
+			    updated_at = $3
+			WHERE chat_id = $4`,
+			userID, *fontSize, time.Now(), chatID)
+		if err != nil {
+			log.Printf("Failed to update font size: %v", err)
+			return fmt.Errorf("failed to update font size: %w", err)
+		}
 	}
 
 	log.Printf("Successfully updated chat settings for chat %s", chatID)
 	return nil
 }
 
-// SendVideoReactionMessage sends a video reaction message (UPDATED: user-based, no channels)
+// SendVideoReactionMessage sends a video reaction message
 func (s *ChatService) SendVideoReactionMessage(chatID, senderID string, videoReaction models.VideoReactionMessage) error {
 	log.Printf("Sending video reaction message to chat %s from user %s", chatID, senderID)
 
-	metadata := map[string]interface{}{
+	metadata := models.JSONMap{
 		"isVideoReaction": true,
 		"videoId":         videoReaction.VideoID,
 		"videoUrl":        videoReaction.VideoURL,
 		"thumbnailUrl":    videoReaction.ThumbnailURL,
-		"userName":        videoReaction.UserName,  // Changed from channelName
-		"userImage":       videoReaction.UserImage, // Changed from channelImage
+		"userName":        videoReaction.UserName,
+		"userImage":       videoReaction.UserImage,
 	}
 
 	message := &models.Message{
@@ -641,7 +730,8 @@ func (s *ChatService) AreUsersBlocked(userID1, userID2 string) (bool, error) {
 		SELECT COUNT(*) FROM blocked_contacts 
 		WHERE (user_id = $1 AND blocked_user_id = $2) 
 		   OR (user_id = $2 AND blocked_user_id = $1)`,
-		userID1, userID2).Scan(&count)
+		userID1, userID2,
+	).Scan(&count)
 
 	if err != nil {
 		log.Printf("Failed to check block status: %v", err)
@@ -652,3 +742,7 @@ func (s *ChatService) AreUsersBlocked(userID1, userID2 string) (bool, error) {
 	log.Printf("Users %s and %s blocked status: %v", userID1, userID2, blocked)
 	return blocked, nil
 }
+
+// Additional helper methods remain unchanged...
+// (GetChatParticipants, UpdateChatLastMessageTime, GetUnreadMessagesCount, etc.)
+// For brevity, keeping only the critical fixes above
