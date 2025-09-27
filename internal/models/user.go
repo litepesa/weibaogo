@@ -1,5 +1,5 @@
 // ===============================
-// internal/models/user.go - UPDATED User Model with Drama Fields + LastPostAt
+// internal/models/user.go - UPDATED User Model with Role and WhatsApp
 // ===============================
 
 package models
@@ -8,8 +8,66 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 )
+
+// UserRole represents the user role enum
+type UserRole string
+
+const (
+	UserRoleAdmin UserRole = "admin"
+	UserRoleHost  UserRole = "host"
+	UserRoleGuest UserRole = "guest"
+)
+
+// String returns the string representation of UserRole
+func (r UserRole) String() string {
+	return string(r)
+}
+
+// IsValid checks if the user role is valid
+func (r UserRole) IsValid() bool {
+	switch r {
+	case UserRoleAdmin, UserRoleHost, UserRoleGuest:
+		return true
+	}
+	return false
+}
+
+// CanPost returns true if the user role can post videos
+func (r UserRole) CanPost() bool {
+	return r == UserRoleAdmin || r == UserRoleHost
+}
+
+// DisplayName returns the display name for the role
+func (r UserRole) DisplayName() string {
+	switch r {
+	case UserRoleAdmin:
+		return "Admin"
+	case UserRoleHost:
+		return "Host"
+	case UserRoleGuest:
+		return "Guest"
+	default:
+		return "Guest"
+	}
+}
+
+// ParseUserRole parses a string to UserRole
+func ParseUserRole(s string) UserRole {
+	switch s {
+	case "admin":
+		return UserRoleAdmin
+	case "host":
+		return UserRoleHost
+	case "guest":
+		return UserRoleGuest
+	default:
+		return UserRoleGuest
+	}
+}
 
 // IntMap represents a map[string]int that can be stored in PostgreSQL as JSONB
 type IntMap map[string]int
@@ -41,10 +99,12 @@ type User struct {
 	UID            string      `json:"uid" db:"uid"`
 	Name           string      `json:"name" db:"name" binding:"required"`
 	PhoneNumber    string      `json:"phoneNumber" db:"phone_number" binding:"required"`
+	WhatsappNumber *string     `json:"whatsappNumber" db:"whatsapp_number"` // NEW: Optional WhatsApp number
 	ProfileImage   string      `json:"profileImage" db:"profile_image"`
 	CoverImage     string      `json:"coverImage" db:"cover_image"`
 	Bio            string      `json:"bio" db:"bio"`
-	UserType       string      `json:"userType" db:"user_type"`
+	UserType       string      `json:"userType" db:"user_type"` // Keep for backward compatibility
+	Role           UserRole    `json:"role" db:"role"`          // NEW: User role (admin, host, guest)
 	FollowersCount int         `json:"followersCount" db:"followers_count"`
 	FollowingCount int         `json:"followingCount" db:"following_count"`
 	VideosCount    int         `json:"videosCount" db:"videos_count"`
@@ -54,7 +114,7 @@ type User struct {
 	IsFeatured     bool        `json:"isFeatured" db:"is_featured"`
 	Tags           StringSlice `json:"tags" db:"tags"`
 
-	// NEW: Drama-related fields
+	// Drama-related fields (keeping for compatibility)
 	FavoriteDramas StringSlice `json:"favoriteDramas" db:"favorite_dramas"`
 	UnlockedDramas StringSlice `json:"unlockedDramas" db:"unlocked_dramas"`
 	DramaProgress  IntMap      `json:"dramaProgress" db:"drama_progress"`
@@ -62,7 +122,7 @@ type User struct {
 	CreatedAt  time.Time  `json:"createdAt" db:"created_at"`
 	UpdatedAt  time.Time  `json:"updatedAt" db:"updated_at"`
 	LastSeen   time.Time  `json:"lastSeen" db:"last_seen"`
-	LastPostAt *time.Time `json:"lastPostAt" db:"last_post_at"` // NEW: Last video post timestamp
+	LastPostAt *time.Time `json:"lastPostAt" db:"last_post_at"`
 
 	// Runtime fields (not stored in DB)
 	IsFollowing   bool `json:"isFollowing" db:"-"`
@@ -103,11 +163,19 @@ func (p *UserPreferences) Scan(value interface{}) error {
 
 // Helper methods
 func (u *User) IsAdmin() bool {
-	return u.UserType == "admin"
+	return u.Role == UserRoleAdmin || u.UserType == "admin" // Check both for compatibility
+}
+
+func (u *User) IsHost() bool {
+	return u.Role == UserRoleHost
+}
+
+func (u *User) IsGuest() bool {
+	return u.Role == UserRoleGuest
 }
 
 func (u *User) IsModerator() bool {
-	return u.UserType == "moderator" || u.UserType == "admin"
+	return u.UserType == "moderator" || u.UserType == "admin" || u.Role == UserRoleAdmin
 }
 
 func (u *User) CanModerate() bool {
@@ -118,12 +186,88 @@ func (u *User) CanManageUsers() bool {
 	return u.IsAdmin()
 }
 
-// NEW: Check if user can create dramas (verified users only)
+// NEW: Check if user can post videos based on role
+func (u *User) CanPost() bool {
+	return u.Role.CanPost()
+}
+
+// NEW: WhatsApp helper methods
+func (u *User) HasWhatsApp() bool {
+	return u.WhatsappNumber != nil && *u.WhatsappNumber != ""
+}
+
+func (u *User) GetWhatsAppLink() *string {
+	if !u.HasWhatsApp() {
+		return nil
+	}
+	link := fmt.Sprintf("https://wa.me/%s", *u.WhatsappNumber)
+	return &link
+}
+
+func (u *User) GetWhatsAppLinkWithMessage() *string {
+	if !u.HasWhatsApp() {
+		return nil
+	}
+	message := fmt.Sprintf("Hi %s! I found your profile on the app.", u.Name)
+	// URL encode the message (simplified)
+	encodedMessage := strings.ReplaceAll(message, " ", "%20")
+	encodedMessage = strings.ReplaceAll(encodedMessage, "!", "%21")
+	link := fmt.Sprintf("https://wa.me/%s?text=%s", *u.WhatsappNumber, encodedMessage)
+	return &link
+}
+
+// NEW: Validate WhatsApp number format (Kenyan format: 254XXXXXXXXX)
+func (u *User) ValidateWhatsAppNumber() error {
+	if u.WhatsappNumber == nil || *u.WhatsappNumber == "" {
+		return nil // Optional field
+	}
+
+	// Check format: 254 followed by 9 digits
+	matched, err := regexp.MatchString(`^254[0-9]{9}$`, *u.WhatsappNumber)
+	if err != nil {
+		return fmt.Errorf("error validating WhatsApp number: %w", err)
+	}
+	if !matched {
+		return fmt.Errorf("WhatsApp number must be in format 254XXXXXXXXX")
+	}
+
+	return nil
+}
+
+// Helper function to format WhatsApp number from various inputs
+func FormatWhatsAppNumber(input string) (*string, error) {
+	if input == "" {
+		return nil, nil
+	}
+
+	// Remove any non-digit characters
+	re := regexp.MustCompile(`\D`)
+	cleaned := re.ReplaceAllString(input, "")
+
+	// Handle different input formats
+	switch {
+	case len(cleaned) == 12 && cleaned[:3] == "254":
+		// Already in correct format: 254XXXXXXXXX
+		return &cleaned, nil
+	case len(cleaned) == 10 && cleaned[0] == '0':
+		// Format: 0XXXXXXXXX -> convert to 254XXXXXXXXX
+		formatted := "254" + cleaned[1:]
+		return &formatted, nil
+	case len(cleaned) == 9:
+		// Format: XXXXXXXXX -> convert to 254XXXXXXXXX
+		formatted := "254" + cleaned
+		return &formatted, nil
+	default:
+		return nil, fmt.Errorf("invalid phone number format: %s", input)
+	}
+}
+
+// Check if user can create dramas (verified users only)
 func (u *User) CanCreateDramas() bool {
 	return u.IsVerified && u.IsActive
 }
 
-// NEW: Check if user has unlocked a specific drama
+// Check if user has unlocked a specific drama
 func (u *User) HasUnlockedDrama(dramaID string) bool {
 	for _, id := range u.UnlockedDramas {
 		if id == dramaID {
@@ -133,7 +277,7 @@ func (u *User) HasUnlockedDrama(dramaID string) bool {
 	return false
 }
 
-// NEW: Check if user has favorited a specific drama
+// Check if user has favorited a specific drama
 func (u *User) HasFavoritedDrama(dramaID string) bool {
 	for _, id := range u.FavoriteDramas {
 		if id == dramaID {
@@ -143,7 +287,7 @@ func (u *User) HasFavoritedDrama(dramaID string) bool {
 	return false
 }
 
-// NEW: Get drama progress for a specific drama
+// Get drama progress for a specific drama
 func (u *User) GetDramaProgress(dramaID string) int {
 	if u.DramaProgress == nil {
 		return 0
@@ -151,7 +295,7 @@ func (u *User) GetDramaProgress(dramaID string) int {
 	return u.DramaProgress[dramaID]
 }
 
-// NEW: LastPostAt helper methods
+// LastPostAt helper methods
 func (u *User) HasPostedVideos() bool {
 	return u.LastPostAt != nil
 }
@@ -255,6 +399,15 @@ func (u *User) ValidateForCreation() []string {
 		errors = append(errors, "Invalid user type")
 	}
 
+	if !u.Role.IsValid() {
+		errors = append(errors, "Invalid user role")
+	}
+
+	// Validate WhatsApp number
+	if err := u.ValidateWhatsAppNumber(); err != nil {
+		errors = append(errors, err.Error())
+	}
+
 	return errors
 }
 
@@ -274,18 +427,21 @@ func isValidUserType(userType string) bool {
 
 // User creation request models
 type CreateUserRequest struct {
-	Name         string `json:"name" binding:"required"`
-	PhoneNumber  string `json:"phoneNumber" binding:"required"`
-	ProfileImage string `json:"profileImage"`
-	Bio          string `json:"bio"`
+	Name           string  `json:"name" binding:"required"`
+	PhoneNumber    string  `json:"phoneNumber" binding:"required"`
+	WhatsappNumber *string `json:"whatsappNumber"` // NEW: Optional WhatsApp number
+	ProfileImage   string  `json:"profileImage"`
+	Bio            string  `json:"bio"`
+	Role           *string `json:"role"` // NEW: Optional role (defaults to guest)
 }
 
 type UpdateUserRequest struct {
-	Name         string   `json:"name"`
-	ProfileImage string   `json:"profileImage"`
-	CoverImage   string   `json:"coverImage"`
-	Bio          string   `json:"bio"`
-	Tags         []string `json:"tags"`
+	Name           string   `json:"name"`
+	ProfileImage   string   `json:"profileImage"`
+	CoverImage     string   `json:"coverImage"`
+	Bio            string   `json:"bio"`
+	Tags           []string `json:"tags"`
+	WhatsappNumber *string  `json:"whatsappNumber"` // NEW: Optional WhatsApp number
 }
 
 // User response models
@@ -293,11 +449,18 @@ type UserResponse struct {
 	User
 	MutualFollowersCount int     `json:"mutualFollowersCount"`
 	RecentVideos         []Video `json:"recentVideos,omitempty"`
-	// NEW: Drama-related response fields
+	// NEW: Role-related response fields
+	RoleDisplayName string `json:"roleDisplayName"`
+	CanPost         bool   `json:"canPost"`
+	// NEW: WhatsApp-related response fields
+	HasWhatsApp             bool    `json:"hasWhatsApp"`
+	WhatsAppLink            *string `json:"whatsAppLink,omitempty"`
+	WhatsAppLinkWithMessage *string `json:"whatsAppLinkWithMessage,omitempty"`
+	// Drama-related response fields
 	CreatedDramasCount  int `json:"createdDramasCount,omitempty"`
 	FavoriteDramasCount int `json:"favoriteDramasCount"`
 	UnlockedDramasCount int `json:"unlockedDramasCount"`
-	// NEW: Last post related fields
+	// Last post related fields
 	HasPostedVideos bool   `json:"hasPostedVideos"`
 	LastPostTimeAgo string `json:"lastPostTimeAgo"`
 }
@@ -314,12 +477,13 @@ type FollowRequest struct {
 }
 
 type UserSearchParams struct {
-	Query    string `json:"query"`
-	UserType string `json:"userType"`
-	Verified *bool  `json:"verified"`
-	Featured *bool  `json:"featured"`
-	Limit    int    `json:"limit"`
-	Offset   int    `json:"offset"`
+	Query    string    `json:"query"`
+	UserType string    `json:"userType"`
+	Role     *UserRole `json:"role"` // NEW: Filter by role
+	Verified *bool     `json:"verified"`
+	Featured *bool     `json:"featured"`
+	Limit    int       `json:"limit"`
+	Offset   int       `json:"offset"`
 }
 
 // User statistics
@@ -333,13 +497,21 @@ type UserStats struct {
 	TotalViews     int     `json:"totalViews"`
 	EngagementRate float64 `json:"engagementRate"`
 
-	// NEW: Drama-related stats
+	// NEW: Role-related stats
+	Role            UserRole `json:"role"`
+	RoleDisplayName string   `json:"roleDisplayName"`
+	CanPost         bool     `json:"canPost"`
+
+	// NEW: WhatsApp-related stats
+	HasWhatsApp bool `json:"hasWhatsApp"`
+
+	// Drama-related stats
 	CreatedDramasCount  int `json:"createdDramasCount"`
 	DramaRevenue        int `json:"dramaRevenue,omitempty"` // Only for verified users
 	FavoriteDramasCount int `json:"favoriteDramasCount"`
 	UnlockedDramasCount int `json:"unlockedDramasCount"`
 
-	// NEW: Last post related stats
+	// Last post related stats
 	HasPostedVideos bool       `json:"hasPostedVideos"`
 	LastPostAt      *time.Time `json:"lastPostAt"`
 	LastPostTimeAgo string     `json:"lastPostTimeAgo"`
@@ -368,7 +540,7 @@ const (
 	MaxCoverImageSize   = 15 * 1024 * 1024 // 15MB
 )
 
-// User types
+// User types (keep for backward compatibility)
 const (
 	UserTypeUser      = "user"
 	UserTypeAdmin     = "admin"

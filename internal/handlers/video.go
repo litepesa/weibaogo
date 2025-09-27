@@ -1,5 +1,5 @@
 // ===============================
-// internal/handlers/video.go - Complete Video Social Media Handlers with Performance Optimizations
+// internal/handlers/video.go - UPDATED with Role-based Video Creation Validation
 // ===============================
 
 package handlers
@@ -23,8 +23,8 @@ type VideoHandler struct {
 
 func NewVideoHandler(service *services.VideoService, userService *services.UserService) *VideoHandler {
 	return &VideoHandler{
-		service:     service,     // KEEP AS IS
-		userService: userService, // ADD THIS
+		service:     service,
+		userService: userService,
 	}
 }
 
@@ -652,10 +652,10 @@ func (h *VideoHandler) GetUserLikedVideos(c *gin.Context) {
 }
 
 // ===============================
-// AUTHENTICATED VIDEO ENDPOINTS WITH VALIDATION
+// 🚀 UPDATED: AUTHENTICATED VIDEO ENDPOINTS WITH ROLE VALIDATION
 // ===============================
 
-// 🚀 OPTIMIZED: CreateVideo with enhanced validation
+// 🚀 UPDATED: CreateVideo with role-based validation
 func (h *VideoHandler) CreateVideo(c *gin.Context) {
 	h.setInteractionHeaders(c)
 
@@ -664,6 +664,18 @@ func (h *VideoHandler) CreateVideo(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error": "User not authenticated",
 			"code":  "AUTH_REQUIRED",
+		})
+		return
+	}
+
+	// 🆕 NEW: Validate user can post videos based on role
+	err := h.userService.ValidateUserForVideoCreation(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error":        "Video creation not allowed",
+			"code":         "ROLE_PERMISSION_DENIED",
+			"details":      err.Error(),
+			"allowedRoles": []string{"admin", "host"},
 		})
 		return
 	}
@@ -688,9 +700,24 @@ func (h *VideoHandler) CreateVideo(c *gin.Context) {
 		return
 	}
 
-	userName, userImage, err := h.userService.GetUserBasicInfo(c.Request.Context(), userID)
+	// 🚀 UPDATED: Get user info including role
+	userName, userImage, userRole, err := h.userService.GetUserBasicInfo(c.Request.Context(), userID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user information"})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to get user information",
+			"code":  "USER_INFO_ERROR",
+		})
+		return
+	}
+
+	// Double-check role permissions (belt and suspenders approach)
+	if !userRole.CanPost() {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error":        "User role cannot post videos",
+			"code":         "ROLE_PERMISSION_DENIED",
+			"userRole":     userRole.String(),
+			"allowedRoles": []string{"admin", "host"},
+		})
 		return
 	}
 
@@ -716,9 +743,11 @@ func (h *VideoHandler) CreateVideo(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"videoId": videoID,
-		"message": "Video created successfully",
-		"status":  "created",
+		"videoId":  videoID,
+		"message":  "Video created successfully",
+		"status":   "created",
+		"userRole": userRole.String(),
+		"canPost":  true,
 	})
 }
 
@@ -884,7 +913,8 @@ func (h *VideoHandler) CreateComment(c *gin.Context) {
 		return
 	}
 
-	userName, userImage, err := h.userService.GetUserBasicInfo(c.Request.Context(), userID)
+	// 🚀 UPDATED: Get user info including role
+	userName, userImage, _, err := h.userService.GetUserBasicInfo(c.Request.Context(), userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "User not found"})
 		return
@@ -1296,6 +1326,7 @@ func (h *VideoHandler) HealthCheck(c *gin.Context) {
 			"url_optimization":  true,
 			"gzip_compression":  true,
 			"smart_caching":     true,
+			"role_validation":   true, // NEW: Role-based video creation
 		},
 	})
 }
@@ -1576,6 +1607,7 @@ func (h *VideoHandler) GetVideoAnalytics(c *gin.Context) {
 		"updatedAt":       video.UpdatedAt,
 		"performance":     "good",
 		"optimized":       true,
+		"roleValidation":  true, // NEW: Indicates role validation is enabled
 		"cached_at":       time.Now().Unix(),
 		"ttl":             1800,
 	})

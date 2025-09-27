@@ -1,5 +1,5 @@
 // ===============================
-// internal/handlers/user.go - FIXED Route Parameter Issue + LastPostAt Support
+// internal/handlers/user.go - UPDATED with Role and WhatsApp Support
 // ===============================
 
 package handlers
@@ -26,22 +26,43 @@ func NewUserHandler(db *sqlx.DB) *UserHandler {
 }
 
 func (h *UserHandler) CreateUser(c *gin.Context) {
-	var user models.User
-	if err := c.ShouldBindJSON(&user); err != nil {
+	var req models.CreateUserRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	user.CreatedAt = time.Now()
-	user.UpdatedAt = time.Now()
-	user.LastSeen = time.Now()
-
-	// Ensure default values
-	if user.UserType == "" {
-		user.UserType = "user"
+	// Format WhatsApp number if provided
+	var whatsappNumber *string
+	if req.WhatsappNumber != nil && *req.WhatsappNumber != "" {
+		formatted, err := models.FormatWhatsAppNumber(*req.WhatsappNumber)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid WhatsApp number: %v", err)})
+			return
+		}
+		whatsappNumber = formatted
 	}
-	if user.Tags == nil {
-		user.Tags = make(models.StringSlice, 0)
+
+	// Set default role if not provided
+	role := models.UserRoleGuest
+	if req.Role != nil {
+		role = models.ParseUserRole(*req.Role)
+	}
+
+	user := models.User{
+		UID:            req.Name + "_" + req.PhoneNumber, // You might want to generate a proper UID
+		Name:           req.Name,
+		PhoneNumber:    req.PhoneNumber,
+		WhatsappNumber: whatsappNumber,
+		ProfileImage:   req.ProfileImage,
+		Bio:            req.Bio,
+		Role:           role,
+		UserType:       "user", // Keep for backward compatibility
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+		LastSeen:       time.Now(),
+		Tags:           make(models.StringSlice, 0),
+		IsActive:       true,
 	}
 
 	// Validate user
@@ -52,32 +73,47 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 	}
 
 	query := `
-		INSERT INTO users (uid, name, phone_number, profile_image, cover_image, bio, user_type, 
-		                   followers_count, following_count, videos_count, likes_count,
+		INSERT INTO users (uid, name, phone_number, whatsapp_number, profile_image, cover_image, bio, 
+		                   user_type, role, followers_count, following_count, videos_count, likes_count,
 		                   is_verified, is_active, is_featured, tags, 
 		                   created_at, updated_at, last_seen)
-		VALUES (:uid, :name, :phone_number, :profile_image, :cover_image, :bio, :user_type, 
-		        :followers_count, :following_count, :videos_count, :likes_count,
+		VALUES (:uid, :name, :phone_number, :whatsapp_number, :profile_image, :cover_image, :bio, 
+		        :user_type, :role, :followers_count, :following_count, :videos_count, :likes_count,
 		        :is_verified, :is_active, :is_featured, :tags,
 		        :created_at, :updated_at, :last_seen)
 		ON CONFLICT (uid) DO UPDATE SET
 		name = EXCLUDED.name,
 		phone_number = EXCLUDED.phone_number,
+		whatsapp_number = EXCLUDED.whatsapp_number,
 		profile_image = EXCLUDED.profile_image,
 		cover_image = EXCLUDED.cover_image,
 		bio = EXCLUDED.bio,
+		role = EXCLUDED.role,
 		updated_at = EXCLUDED.updated_at,
 		last_seen = EXCLUDED.last_seen`
 
 	_, err := h.db.NamedExec(query, user)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user", "details": err.Error()})
 		return
+	}
+
+	// Return user response with role and WhatsApp info
+	response := models.UserResponse{
+		User:                    user,
+		RoleDisplayName:         user.Role.DisplayName(),
+		CanPost:                 user.CanPost(),
+		HasWhatsApp:             user.HasWhatsApp(),
+		WhatsAppLink:            user.GetWhatsAppLink(),
+		WhatsAppLinkWithMessage: user.GetWhatsAppLinkWithMessage(),
+		HasPostedVideos:         user.HasPostedVideos(),
+		LastPostTimeAgo:         user.GetLastPostTimeAgo(),
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
 		"uid":     user.UID,
 		"message": "User created successfully",
+		"user":    response,
 	})
 }
 
@@ -89,8 +125,8 @@ func (h *UserHandler) GetUser(c *gin.Context) {
 	}
 
 	var user models.User
-	query := `SELECT uid, name, phone_number, profile_image, cover_image, bio, user_type,
-	                 followers_count, following_count, videos_count, likes_count,
+	query := `SELECT uid, name, phone_number, whatsapp_number, profile_image, cover_image, bio, 
+	                 user_type, role, followers_count, following_count, videos_count, likes_count,
 	                 is_verified, is_active, is_featured, tags,
 	                 created_at, updated_at, last_seen, last_post_at
 	          FROM users WHERE uid = $1 AND is_active = true`
@@ -100,7 +136,19 @@ func (h *UserHandler) GetUser(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, user)
+	// Create enhanced response
+	response := models.UserResponse{
+		User:                    user,
+		RoleDisplayName:         user.Role.DisplayName(),
+		CanPost:                 user.CanPost(),
+		HasWhatsApp:             user.HasWhatsApp(),
+		WhatsAppLink:            user.GetWhatsAppLink(),
+		WhatsAppLinkWithMessage: user.GetWhatsAppLinkWithMessage(),
+		HasPostedVideos:         user.HasPostedVideos(),
+		LastPostTimeAgo:         user.GetLastPostTimeAgo(),
+	}
+
+	c.JSON(http.StatusOK, response)
 }
 
 func (h *UserHandler) UpdateUser(c *gin.Context) {
@@ -115,36 +163,87 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 	if requestingUserID != userID {
 		// Check if requesting user is admin
 		var requestingUser models.User
-		err := h.db.Get(&requestingUser, "SELECT user_type FROM users WHERE uid = $1", requestingUserID)
+		err := h.db.Get(&requestingUser, "SELECT user_type, role FROM users WHERE uid = $1", requestingUserID)
 		if err != nil || !requestingUser.IsAdmin() {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 			return
 		}
 	}
 
-	var user models.User
-	if err := c.ShouldBindJSON(&user); err != nil {
+	var req models.UpdateUserRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	user.UID = userID
-	user.UpdatedAt = time.Now()
-	user.LastSeen = time.Now()
+	// Format WhatsApp number if provided
+	var whatsappNumber *string
+	if req.WhatsappNumber != nil {
+		if *req.WhatsappNumber == "" {
+			// Empty string means remove WhatsApp number
+			whatsappNumber = nil
+		} else {
+			formatted, err := models.FormatWhatsAppNumber(*req.WhatsappNumber)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid WhatsApp number: %v", err)})
+				return
+			}
+			whatsappNumber = formatted
+		}
+	}
 
-	query := `
-		UPDATE users SET 
-			name = :name, 
-			phone_number = :phone_number, 
-			profile_image = :profile_image,
-			cover_image = :cover_image,
-			bio = :bio, 
-			tags = :tags,
-			updated_at = :updated_at, 
-			last_seen = :last_seen
-		WHERE uid = :uid`
+	// Build dynamic update query
+	setParts := []string{"updated_at = $1", "last_seen = $1"}
+	args := []interface{}{time.Now()}
+	argIndex := 2
 
-	_, err := h.db.NamedExec(query, user)
+	if req.Name != "" {
+		setParts = append(setParts, fmt.Sprintf("name = $%d", argIndex))
+		args = append(args, req.Name)
+		argIndex++
+	}
+
+	if req.ProfileImage != "" {
+		setParts = append(setParts, fmt.Sprintf("profile_image = $%d", argIndex))
+		args = append(args, req.ProfileImage)
+		argIndex++
+	}
+
+	if req.CoverImage != "" {
+		setParts = append(setParts, fmt.Sprintf("cover_image = $%d", argIndex))
+		args = append(args, req.CoverImage)
+		argIndex++
+	}
+
+	if req.Bio != "" {
+		setParts = append(setParts, fmt.Sprintf("bio = $%d", argIndex))
+		args = append(args, req.Bio)
+		argIndex++
+	}
+
+	if req.Tags != nil {
+		setParts = append(setParts, fmt.Sprintf("tags = $%d", argIndex))
+		args = append(args, models.StringSlice(req.Tags))
+		argIndex++
+	}
+
+	// Handle WhatsApp number update (including removal)
+	if req.WhatsappNumber != nil {
+		setParts = append(setParts, fmt.Sprintf("whatsapp_number = $%d", argIndex))
+		args = append(args, whatsappNumber)
+		argIndex++
+	}
+
+	if len(setParts) == 2 { // Only time fields
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No fields to update"})
+		return
+	}
+
+	query := fmt.Sprintf("UPDATE users SET %s WHERE uid = $%d",
+		strings.Join(setParts, ", "), argIndex)
+	args = append(args, userID)
+
+	_, err := h.db.Exec(query, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update user"})
 		return
@@ -165,7 +264,7 @@ func (h *UserHandler) DeleteUser(c *gin.Context) {
 	if requestingUserID != userID {
 		// Check if requesting user is admin
 		var requestingUser models.User
-		err := h.db.Get(&requestingUser, "SELECT user_type FROM users WHERE uid = $1", requestingUserID)
+		err := h.db.Get(&requestingUser, "SELECT user_type, role FROM users WHERE uid = $1", requestingUserID)
 		if err != nil || !requestingUser.IsAdmin() {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 			return
@@ -283,12 +382,29 @@ func (h *UserHandler) GetAllUsers(c *gin.Context) {
 		argIndex++
 	}
 
+	// NEW: Role filtering
+	if role := c.Query("role"); role != "" {
+		whereClause += fmt.Sprintf(" AND role = $%d", argIndex)
+		args = append(args, role)
+		argIndex++
+	}
+
 	if verified := c.Query("verified"); verified != "" {
 		if verified == "true" {
 			whereClause += " AND is_verified = true"
 		} else if verified == "false" {
 			whereClause += " AND is_verified = false"
 		}
+	}
+
+	// NEW: Filter users who can post (admin/host only)
+	if canPost := c.Query("canPost"); canPost == "true" {
+		whereClause += " AND role IN ('admin', 'host')"
+	}
+
+	// NEW: Filter users with WhatsApp
+	if hasWhatsApp := c.Query("hasWhatsApp"); hasWhatsApp == "true" {
+		whereClause += " AND whatsapp_number IS NOT NULL AND whatsapp_number != ''"
 	}
 
 	if query := c.Query("q"); query != "" {
@@ -310,6 +426,8 @@ func (h *UserHandler) GetAllUsers(c *gin.Context) {
 			orderBy = "ORDER BY videos_count DESC"
 		case "name":
 			orderBy = "ORDER BY name ASC"
+		case "role":
+			orderBy = "ORDER BY role ASC"
 		default:
 			orderBy = "ORDER BY created_at DESC"
 		}
@@ -320,8 +438,8 @@ func (h *UserHandler) GetAllUsers(c *gin.Context) {
 	args = append(args, limit, offset)
 
 	var users []models.User
-	query := `SELECT uid, name, phone_number, profile_image, cover_image, bio, user_type,
-	                 followers_count, following_count, videos_count, likes_count,
+	query := `SELECT uid, name, phone_number, whatsapp_number, profile_image, cover_image, bio, 
+	                 user_type, role, followers_count, following_count, videos_count, likes_count,
 	                 is_verified, is_active, is_featured, tags,
 	                 created_at, updated_at, last_seen, last_post_at
 	          FROM users ` + whereClause + limitOffset
@@ -331,9 +449,24 @@ func (h *UserHandler) GetAllUsers(c *gin.Context) {
 		return
 	}
 
+	// Convert to enhanced response format
+	userResponses := make([]models.UserResponse, len(users))
+	for i, user := range users {
+		userResponses[i] = models.UserResponse{
+			User:                    user,
+			RoleDisplayName:         user.Role.DisplayName(),
+			CanPost:                 user.CanPost(),
+			HasWhatsApp:             user.HasWhatsApp(),
+			WhatsAppLink:            user.GetWhatsAppLink(),
+			WhatsAppLinkWithMessage: user.GetWhatsAppLinkWithMessage(),
+			HasPostedVideos:         user.HasPostedVideos(),
+			LastPostTimeAgo:         user.GetLastPostTimeAgo(),
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"users": users,
-		"total": len(users),
+		"users": userResponses,
+		"total": len(userResponses),
 	})
 }
 
@@ -355,8 +488,8 @@ func (h *UserHandler) SearchUsers(c *gin.Context) {
 
 	var users []models.User
 	searchQuery := `
-		SELECT uid, name, phone_number, profile_image, cover_image, bio, user_type,
-		       followers_count, following_count, videos_count, likes_count,
+		SELECT uid, name, phone_number, whatsapp_number, profile_image, cover_image, bio, 
+		       user_type, role, followers_count, following_count, videos_count, likes_count,
 		       is_verified, is_active, is_featured, tags,
 		       created_at, updated_at, last_seen, last_post_at
 		FROM users 
@@ -377,9 +510,24 @@ func (h *UserHandler) SearchUsers(c *gin.Context) {
 		return
 	}
 
+	// Convert to enhanced response format
+	userResponses := make([]models.UserResponse, len(users))
+	for i, user := range users {
+		userResponses[i] = models.UserResponse{
+			User:                    user,
+			RoleDisplayName:         user.Role.DisplayName(),
+			CanPost:                 user.CanPost(),
+			HasWhatsApp:             user.HasWhatsApp(),
+			WhatsAppLink:            user.GetWhatsAppLink(),
+			WhatsAppLinkWithMessage: user.GetWhatsAppLinkWithMessage(),
+			HasPostedVideos:         user.HasPostedVideos(),
+			LastPostTimeAgo:         user.GetLastPostTimeAgo(),
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"users": users,
-		"total": len(users),
+		"users": userResponses,
+		"total": len(userResponses),
 		"query": query,
 	})
 }
@@ -394,8 +542,8 @@ func (h *UserHandler) GetUserStats(c *gin.Context) {
 	// Get user with basic stats
 	var user models.User
 	err := h.db.Get(&user, `
-		SELECT uid, name, phone_number, profile_image, cover_image, bio, user_type,
-		       followers_count, following_count, videos_count, likes_count,
+		SELECT uid, name, phone_number, whatsapp_number, profile_image, cover_image, bio, 
+		       user_type, role, followers_count, following_count, videos_count, likes_count,
 		       is_verified, is_active, is_featured, tags,
 		       created_at, updated_at, last_seen, last_post_at
 		FROM users WHERE uid = $1 AND is_active = true`, userID)
@@ -430,6 +578,12 @@ func (h *UserHandler) GetUserStats(c *gin.Context) {
 		"joinDate":        user.CreatedAt,
 		"lastActiveDate":  user.LastSeen,
 		"lastPostAt":      user.LastPostAt,
+		// NEW: Role and WhatsApp stats
+		"role":            user.Role,
+		"roleDisplayName": user.Role.DisplayName(),
+		"canPost":         user.CanPost(),
+		"hasWhatsApp":     user.HasWhatsApp(),
+		"whatsAppLink":    user.GetWhatsAppLink(),
 	}
 
 	c.JSON(http.StatusOK, stats)
@@ -443,10 +597,11 @@ func (h *UserHandler) UpdateUserStatus(c *gin.Context) {
 	}
 
 	var request struct {
-		IsActive   *bool  `json:"isActive"`
-		IsVerified *bool  `json:"isVerified"`
-		IsFeatured *bool  `json:"isFeatured"`
-		UserType   string `json:"userType"`
+		IsActive   *bool   `json:"isActive"`
+		IsVerified *bool   `json:"isVerified"`
+		IsFeatured *bool   `json:"isFeatured"`
+		UserType   string  `json:"userType"`
+		Role       *string `json:"role"` // NEW: Role update
 	}
 
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -483,6 +638,18 @@ func (h *UserHandler) UpdateUserStatus(c *gin.Context) {
 		argIndex++
 	}
 
+	// NEW: Handle role update
+	if request.Role != nil {
+		role := models.ParseUserRole(*request.Role)
+		if !role.IsValid() {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid role value"})
+			return
+		}
+		setParts = append(setParts, fmt.Sprintf("role = $%d", argIndex))
+		args = append(args, role)
+		argIndex++
+	}
+
 	if len(setParts) == 1 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "No fields to update"})
 		return
@@ -510,4 +677,71 @@ func (h *UserHandler) UpdateUserStatus(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "User status updated successfully"})
+}
+
+// NEW: Get users by role
+func (h *UserHandler) GetUsersByRole(c *gin.Context) {
+	role := c.Param("role")
+	if role == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Role required"})
+		return
+	}
+
+	userRole := models.ParseUserRole(role)
+	if !userRole.IsValid() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid role"})
+		return
+	}
+
+	limit := 50
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 1000 {
+			limit = parsed
+		}
+	}
+
+	offset := 0
+	if o := c.Query("offset"); o != "" {
+		if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+
+	var users []models.User
+	query := `
+		SELECT uid, name, phone_number, whatsapp_number, profile_image, cover_image, bio, 
+		       user_type, role, followers_count, following_count, videos_count, likes_count,
+		       is_verified, is_active, is_featured, tags,
+		       created_at, updated_at, last_seen, last_post_at
+		FROM users 
+		WHERE role = $1 AND is_active = true
+		ORDER BY created_at DESC
+		LIMIT $2 OFFSET $3`
+
+	err := h.db.Select(&users, query, userRole, limit, offset)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch users by role"})
+		return
+	}
+
+	// Convert to enhanced response format
+	userResponses := make([]models.UserResponse, len(users))
+	for i, user := range users {
+		userResponses[i] = models.UserResponse{
+			User:                    user,
+			RoleDisplayName:         user.Role.DisplayName(),
+			CanPost:                 user.CanPost(),
+			HasWhatsApp:             user.HasWhatsApp(),
+			WhatsAppLink:            user.GetWhatsAppLink(),
+			WhatsAppLinkWithMessage: user.GetWhatsAppLinkWithMessage(),
+			HasPostedVideos:         user.HasPostedVideos(),
+			LastPostTimeAgo:         user.GetLastPostTimeAgo(),
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"users": userResponses,
+		"role":  userRole.DisplayName(),
+		"total": len(userResponses),
+	})
 }

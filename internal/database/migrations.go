@@ -1,5 +1,5 @@
 // ===============================
-// internal/database/migrations.go - Video Social Media Migrations (Drama Removed)
+// internal/database/migrations.go - Video Social Media Migrations with Role and WhatsApp
 // ===============================
 
 package database
@@ -567,6 +567,114 @@ func RunMigrations(db *sqlx.DB) error {
 				WHERE users.uid = subquery.user_id;
 			`,
 		},
+		{
+			Version: "009_add_user_role_and_whatsapp",
+			Query: `
+				-- ===============================
+				-- ADD USER ROLE AND WHATSAPP NUMBER FIELDS
+				-- ===============================
+				
+				-- Add role column to users table
+				ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'guest';
+
+				-- Add whatsapp_number column to users table  
+				ALTER TABLE users ADD COLUMN IF NOT EXISTS whatsapp_number VARCHAR(20);
+
+				-- Add check constraint for role values
+				DO $block1$
+				BEGIN
+					IF NOT EXISTS (SELECT 1 FROM information_schema.check_constraints 
+								  WHERE constraint_name = 'users_role_check') THEN
+						ALTER TABLE users ADD CONSTRAINT users_role_check
+						CHECK (role IN ('admin', 'host', 'guest'));
+					END IF;
+				END $block1$;
+
+				-- Add check constraint for WhatsApp number format (Kenyan format: 254XXXXXXXXX)
+				DO $block2$
+				BEGIN
+					IF NOT EXISTS (SELECT 1 FROM information_schema.check_constraints 
+								  WHERE constraint_name = 'users_whatsapp_number_format_check') THEN
+						ALTER TABLE users ADD CONSTRAINT users_whatsapp_number_format_check
+						CHECK (whatsapp_number IS NULL OR whatsapp_number ~ '^254[0-9]{9}$');
+					END IF;
+				END $block2$;
+
+				-- Create index for role column for efficient filtering
+				CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+
+				-- Create index for whatsapp_number column
+				CREATE INDEX IF NOT EXISTS idx_users_whatsapp_number ON users(whatsapp_number);
+
+				-- Update existing users to have 'guest' role if they don't have one
+				UPDATE users SET role = 'guest' WHERE role IS NULL OR role = '';
+
+				-- Migrate existing user_type values to role column for better alignment
+				UPDATE users 
+				SET role = CASE 
+					WHEN user_type = 'admin' THEN 'admin'
+					WHEN user_type = 'moderator' THEN 'host'  -- Moderators become hosts
+					ELSE 'guest'
+				END
+				WHERE role = 'guest';
+
+				-- Create function to validate video posting based on user role
+				CREATE OR REPLACE FUNCTION validate_user_can_post(user_uid VARCHAR(255))
+				RETURNS BOOLEAN AS $func6$
+				DECLARE
+					user_role VARCHAR(20);
+				BEGIN
+					SELECT role INTO user_role FROM users WHERE uid = user_uid AND is_active = true;
+					
+					IF user_role IS NULL THEN
+						RETURN FALSE;
+					END IF;
+					
+					RETURN user_role IN ('admin', 'host');
+				END;
+				$func6$ LANGUAGE plpgsql;
+
+				-- Add trigger to validate user can post when creating videos
+				CREATE OR REPLACE FUNCTION check_user_can_post_video()
+				RETURNS TRIGGER AS $func7$
+				BEGIN
+					IF NOT validate_user_can_post(NEW.user_id) THEN
+						RAISE EXCEPTION 'User with role "guest" cannot post videos. Only admin and host users can post videos.';
+					END IF;
+					RETURN NEW;
+				END;
+				$func7$ LANGUAGE plpgsql;
+
+				-- Create trigger for video posting validation
+				DROP TRIGGER IF EXISTS trigger_check_user_can_post_video ON videos;
+				CREATE TRIGGER trigger_check_user_can_post_video
+					BEFORE INSERT ON videos
+					FOR EACH ROW 
+					EXECUTE FUNCTION check_user_can_post_video();
+
+				-- Update the existing video count update function to also validate role
+				CREATE OR REPLACE FUNCTION update_user_video_count()
+				RETURNS TRIGGER AS $func1_updated$
+				BEGIN
+					IF TG_OP = 'INSERT' THEN
+						-- Additional validation happens in trigger_check_user_can_post_video
+						UPDATE users 
+						SET videos_count = videos_count + 1, 
+							updated_at = CURRENT_TIMESTAMP
+						WHERE uid = NEW.user_id;
+						RETURN NEW;
+					ELSIF TG_OP = 'DELETE' THEN
+						UPDATE users 
+						SET videos_count = GREATEST(0, videos_count - 1),
+							updated_at = CURRENT_TIMESTAMP
+						WHERE uid = OLD.user_id;
+						RETURN OLD;
+					END IF;
+					RETURN NULL;
+				END;
+				$func1_updated$ LANGUAGE plpgsql;
+			`,
+		},
 	}
 
 	for _, migration := range migrations {
@@ -576,6 +684,11 @@ func RunMigrations(db *sqlx.DB) error {
 	}
 
 	log.Println("✅ Video social media migrations completed successfully")
+	log.Println("🔑 New features added:")
+	log.Println("   • User roles: admin, host, guest")
+	log.Println("   • WhatsApp number field (Kenyan format: 254XXXXXXXXX)")
+	log.Println("   • Role-based video posting permissions (admin/host only)")
+	log.Println("   • Database triggers for role validation")
 	return nil
 }
 

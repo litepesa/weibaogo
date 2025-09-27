@@ -142,6 +142,10 @@ type VideoResponse struct {
 	ThumbnailURL string `json:"thumbnailUrl"`
 	Caption      string `json:"caption"`
 
+	// NEW: Role-related fields
+	UserRole    string `json:"userRole" db:"-"` // User's role (admin, host, guest)
+	UserCanPost bool   `json:"userCanPost" db:"-"`
+
 	// 🔧 CRITICAL: Frontend-compatible field names
 	LikesCount    int `json:"likes"`    // Database: likes_count -> JSON: likes
 	CommentsCount int `json:"comments"` // Database: comments_count -> JSON: comments
@@ -419,15 +423,16 @@ const (
 
 // Video search and filtering
 type VideoSearchParams struct {
-	Query     string   `json:"query"`
-	Tags      []string `json:"tags"`
-	UserID    string   `json:"userId"`
-	Featured  *bool    `json:"featured"`
-	MediaType string   `json:"mediaType"` // "video", "image", "all"
-	SortBy    string   `json:"sortBy"`    // "latest", "popular", "trending"
-	Limit     int      `json:"limit"`
-	Offset    int      `json:"offset"`
-	LastID    string   `json:"lastId"` // For cursor-based pagination
+	Query     string    `json:"query"`
+	Tags      []string  `json:"tags"`
+	UserID    string    `json:"userId"`
+	Featured  *bool     `json:"featured"`
+	MediaType string    `json:"mediaType"` // "video", "image", "all"
+	SortBy    string    `json:"sortBy"`    // "latest", "popular", "trending"
+	Limit     int       `json:"limit"`
+	Offset    int       `json:"offset"`
+	LastID    string    `json:"lastId"` // For cursor-based pagination
+	Role      *UserRole `json:"role"`
 }
 
 type VideoSortOption string

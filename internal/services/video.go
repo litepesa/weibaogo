@@ -1,5 +1,5 @@
 // ===============================
-// internal/services/video.go - Complete Video Service with Performance Optimizations
+// internal/services/video.go - UPDATED Video Service with Role Validation
 // ===============================
 
 package services
@@ -87,7 +87,86 @@ func (s *VideoService) applyURLOptimizations(video *models.VideoResponse) {
 }
 
 // ===============================
-// OPTIMIZED VIDEO CRUD OPERATIONS
+// 🆕 NEW: ROLE-BASED VALIDATION HELPERS
+// ===============================
+
+// 🆕 NEW: ValidateUserCanCreateVideo validates user role and status for video creation
+func (s *VideoService) ValidateUserCanCreateVideo(ctx context.Context, userID string) (*models.User, error) {
+	var user models.User
+	query := `
+		SELECT uid, name, phone_number, whatsapp_number, profile_image, bio, 
+		       user_type, role, is_verified, is_active, created_at
+		FROM users 
+		WHERE uid = $1`
+
+	err := s.db.QueryRowContext(ctx, query, userID).Scan(
+		&user.UID, &user.Name, &user.PhoneNumber, &user.WhatsappNumber,
+		&user.ProfileImage, &user.Bio, &user.UserType, &user.Role,
+		&user.IsVerified, &user.IsActive, &user.CreatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("user not found: %s", userID)
+	}
+
+	// Check if user account is active
+	if !user.IsActive {
+		return nil, fmt.Errorf("user account is inactive")
+	}
+
+	// Check if user role allows posting videos
+	if !user.CanPost() {
+		return nil, fmt.Errorf("user role '%s' cannot post videos. Only admin and host users can post", user.Role.DisplayName())
+	}
+
+	return &user, nil
+}
+
+// 🆕 NEW: GetUserBasicInfoWithRole retrieves user info including role for video operations
+func (s *VideoService) GetUserBasicInfoWithRole(ctx context.Context, userID string) (string, string, models.UserRole, error) {
+	var name, profileImage string
+	var role models.UserRole
+
+	query := `
+		SELECT name, profile_image, role 
+		FROM users 
+		WHERE uid = $1 AND is_active = true`
+
+	err := s.db.QueryRowContext(ctx, query, userID).Scan(&name, &profileImage, &role)
+	if err != nil {
+		return "", "", models.UserRoleGuest, fmt.Errorf("failed to get user info: %w", err)
+	}
+
+	return name, profileImage, role, nil
+}
+
+// 🆕 NEW: CheckUserPostingPermission quickly checks if user can post
+func (s *VideoService) CheckUserPostingPermission(ctx context.Context, userID string) error {
+	var role models.UserRole
+	var isActive bool
+
+	query := `
+		SELECT role, is_active 
+		FROM users 
+		WHERE uid = $1`
+
+	err := s.db.QueryRowContext(ctx, query, userID).Scan(&role, &isActive)
+	if err != nil {
+		return fmt.Errorf("user not found: %s", userID)
+	}
+
+	if !isActive {
+		return fmt.Errorf("user account is inactive")
+	}
+
+	if !role.CanPost() {
+		return fmt.Errorf("user role '%s' cannot post videos", role.DisplayName())
+	}
+
+	return nil
+}
+
+// ===============================
+// OPTIMIZED VIDEO CRUD OPERATIONS WITH ROLE VALIDATION
 // ===============================
 
 // 🚀 OPTIMIZED: GetVideosOptimized with better query and URL optimization
@@ -95,79 +174,88 @@ func (s *VideoService) GetVideosOptimized(ctx context.Context, params models.Vid
 	// Optimized query with better indexing hints
 	query := `
 		SELECT 
-			id,
-			user_id,
-			user_name,
-			user_image,
-			video_url,
-			thumbnail_url,
-			caption,
-			likes_count,
-			comments_count,
-			views_count,
-			shares_count,
-			tags,
-			is_active,
-			is_featured,
-			is_multiple_images,
-			image_urls,
-			created_at,
-			updated_at
-		FROM videos 
-		WHERE is_active = true`
+			v.id,
+			v.user_id,
+			v.user_name,
+			v.user_image,
+			v.video_url,
+			v.thumbnail_url,
+			v.caption,
+			v.likes_count,
+			v.comments_count,
+			v.views_count,
+			v.shares_count,
+			v.tags,
+			v.is_active,
+			v.is_featured,
+			v.is_multiple_images,
+			v.image_urls,
+			v.created_at,
+			v.updated_at,
+			u.role as user_role
+		FROM videos v
+		JOIN users u ON v.user_id = u.uid
+		WHERE v.is_active = true AND u.is_active = true`
 
 	args := []interface{}{}
 	argIndex := 1
 
 	// Add filters with optimized conditions
 	if params.UserID != "" {
-		query += fmt.Sprintf(" AND user_id = $%d", argIndex)
+		query += fmt.Sprintf(" AND v.user_id = $%d", argIndex)
 		args = append(args, params.UserID)
 		argIndex++
 	}
 
 	if params.Featured != nil {
-		query += fmt.Sprintf(" AND is_featured = $%d", argIndex)
+		query += fmt.Sprintf(" AND v.is_featured = $%d", argIndex)
 		args = append(args, *params.Featured)
 		argIndex++
 	}
 
 	if params.MediaType != "" && params.MediaType != "all" {
 		if params.MediaType == "image" {
-			query += " AND is_multiple_images = true"
+			query += " AND v.is_multiple_images = true"
 		} else if params.MediaType == "video" {
-			query += " AND is_multiple_images = false"
+			query += " AND v.is_multiple_images = false"
 		}
 	}
 
 	if params.Query != "" {
 		// Optimized full-text search with better performance
-		query += fmt.Sprintf(" AND (caption ILIKE $%d OR user_name ILIKE $%d)", argIndex, argIndex)
+		query += fmt.Sprintf(" AND (v.caption ILIKE $%d OR v.user_name ILIKE $%d)", argIndex, argIndex)
 		searchPattern := "%" + params.Query + "%"
 		args = append(args, searchPattern)
+		argIndex++
+	}
+
+	// 🆕 NEW: Filter by role if specified
+	if params.Role != nil {
+		query += fmt.Sprintf(" AND u.role = $%d", argIndex)
+		args = append(args, *params.Role)
 		argIndex++
 	}
 
 	// Optimized sorting with better performance
 	switch params.SortBy {
 	case "popular":
-		query += " ORDER BY likes_count DESC, views_count DESC, created_at DESC"
+		query += " ORDER BY v.likes_count DESC, v.views_count DESC, v.created_at DESC"
 	case "trending":
 		// Improved trending algorithm with time decay
 		query += ` ORDER BY (
 			CASE 
-				WHEN EXTRACT(EPOCH FROM (NOW() - created_at)) > 0 THEN
-					(likes_count * 2.5 + comments_count * 3.5 + shares_count * 5.0 + views_count * 0.1) 
-					/ POWER(EXTRACT(EPOCH FROM (NOW() - created_at))/3600 + 1, 1.8)
-				ELSE likes_count * 2.5 + comments_count * 3.5 + shares_count * 5.0 
+				WHEN EXTRACT(EPOCH FROM (NOW() - v.created_at)) > 0 THEN
+					(v.likes_count * 2.5 + v.comments_count * 3.5 + v.shares_count * 5.0 + v.views_count * 0.1) 
+					/ POWER(EXTRACT(EPOCH FROM (NOW() - v.created_at))/3600 + 1, 1.8)
+				ELSE v.likes_count * 2.5 + v.comments_count * 3.5 + v.shares_count * 5.0 
 			END
-		) DESC, created_at DESC`
+		) DESC, v.created_at DESC`
 	case "views":
-		query += " ORDER BY views_count DESC, created_at DESC"
+		query += " ORDER BY v.views_count DESC, v.created_at DESC"
 	case "likes":
-		query += " ORDER BY likes_count DESC, created_at DESC"
+		query += " ORDER BY v.likes_count DESC, v.created_at DESC"
 	default: // "latest"
-		query += " ORDER BY created_at DESC"
+		query += " ORDER BY v.created_at DESC"
 	}
 
 	// Add pagination with limits
@@ -190,6 +278,8 @@ func (s *VideoService) GetVideosOptimized(ctx context.Context, params models.Vid
 	var videos []models.VideoResponse
 	for rows.Next() {
 		var video models.VideoResponse
+		var userRole models.UserRole
+
 		err := rows.Scan(
 			&video.ID,
 			&video.UserID,
@@ -209,6 +299,7 @@ func (s *VideoService) GetVideosOptimized(ctx context.Context, params models.Vid
 			&video.ImageUrls,
 			&video.CreatedAt,
 			&video.UpdatedAt,
+			&userRole,
 		)
 		if err != nil {
 			return nil, err
@@ -222,33 +313,38 @@ func (s *VideoService) GetVideosOptimized(ctx context.Context, params models.Vid
 		video.IsLiked = false     // Will be set by handler if user is authenticated
 		video.IsFollowing = false // Will be set by handler if user is authenticated
 
+		// 🆕 NEW: Add role information to response
+		video.UserRole = userRole.String()
+		video.UserCanPost = userRole.CanPost()
+
 		videos = append(videos, video)
 	}
 
 	return videos, nil
 }
 
-// 🚀 NEW: Bulk video fetching for efficient loading
+// 🚀 NEW: Bulk video fetching for efficient loading with role info
 func (s *VideoService) GetVideosBulk(ctx context.Context, videoIDs []string, includeInactive bool) ([]models.VideoResponse, error) {
 	if len(videoIDs) == 0 {
 		return []models.VideoResponse{}, nil
 	}
 
-	// Build query with IN clause for bulk fetching
+	// Build query with IN clause for bulk fetching including role
 	query := `
 		SELECT 
-			id, user_id, user_name, user_image, video_url, thumbnail_url,
-			caption, likes_count, comments_count, views_count, shares_count,
-			tags, is_active, is_featured, is_multiple_images, image_urls,
-			created_at, updated_at
-		FROM videos 
-		WHERE id = ANY($1::text[])`
+			v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
+			v.caption, v.likes_count, v.comments_count, v.views_count, v.shares_count,
+			v.tags, v.is_active, v.is_featured, v.is_multiple_images, v.image_urls,
+			v.created_at, v.updated_at, u.role as user_role
+		FROM videos v
+		JOIN users u ON v.user_id = u.uid
+		WHERE v.id = ANY($1::text[]) AND u.is_active = true`
 
 	if !includeInactive {
-		query += " AND is_active = true"
+		query += " AND v.is_active = true"
 	}
 
-	query += " ORDER BY created_at DESC"
+	query += " ORDER BY v.created_at DESC"
 
 	// Convert string slice to PostgreSQL array format
 	rows, err := s.db.QueryContext(ctx, query, videoIDs)
@@ -260,12 +356,14 @@ func (s *VideoService) GetVideosBulk(ctx context.Context, videoIDs []string, inc
 	var videos []models.VideoResponse
 	for rows.Next() {
 		var video models.VideoResponse
+		var userRole models.UserRole
+
 		err := rows.Scan(
 			&video.ID, &video.UserID, &video.UserName, &video.UserImage,
 			&video.VideoURL, &video.ThumbnailURL, &video.Caption,
 			&video.LikesCount, &video.CommentsCount, &video.ViewsCount, &video.SharesCount,
 			&video.Tags, &video.IsActive, &video.IsFeatured, &video.IsMultipleImages,
-			&video.ImageUrls, &video.CreatedAt, &video.UpdatedAt,
+			&video.ImageUrls, &video.CreatedAt, &video.UpdatedAt, &userRole,
 		)
 		if err != nil {
 			return nil, err
@@ -275,24 +373,29 @@ func (s *VideoService) GetVideosBulk(ctx context.Context, videoIDs []string, inc
 		s.applyURLOptimizations(&video)
 		video.UserProfileImage = video.UserImage
 
+		// 🆕 NEW: Add role information
+		video.UserRole = userRole.String()
+		video.UserCanPost = userRole.CanPost()
+
 		videos = append(videos, video)
 	}
 
 	return videos, nil
 }
 
-// 🚀 OPTIMIZED: GetFeaturedVideosOptimized with better performance
+// 🚀 OPTIMIZED: GetFeaturedVideosOptimized with role info
 func (s *VideoService) GetFeaturedVideosOptimized(ctx context.Context, limit int) ([]models.VideoResponse, error) {
-	// Optimized query with index hints
+	// Optimized query with index hints and role info
 	query := `
 		SELECT 
-			id, user_id, user_name, user_image, video_url, thumbnail_url,
-			caption, likes_count, comments_count, views_count, shares_count,
-			tags, is_active, is_featured, is_multiple_images, image_urls,
-			created_at, updated_at
-		FROM videos 
-		WHERE is_active = true AND is_featured = true 
-		ORDER BY created_at DESC 
+			v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
+			v.caption, v.likes_count, v.comments_count, v.views_count, v.shares_count,
+			v.tags, v.is_active, v.is_featured, v.is_multiple_images, v.image_urls,
+			v.created_at, v.updated_at, u.role as user_role
+		FROM videos v
+		JOIN users u ON v.user_id = u.uid
+		WHERE v.is_active = true AND v.is_featured = true AND u.is_active = true
+		ORDER BY v.created_at DESC 
 		LIMIT $1`
 
 	rows, err := s.db.QueryContext(ctx, query, limit)
@@ -304,12 +407,14 @@ func (s *VideoService) GetFeaturedVideosOptimized(ctx context.Context, limit int
 	var videos []models.VideoResponse
 	for rows.Next() {
 		var video models.VideoResponse
+		var userRole models.UserRole
+
 		err := rows.Scan(
 			&video.ID, &video.UserID, &video.UserName, &video.UserImage,
 			&video.VideoURL, &video.ThumbnailURL, &video.Caption,
 			&video.LikesCount, &video.CommentsCount, &video.ViewsCount, &video.SharesCount,
 			&video.Tags, &video.IsActive, &video.IsFeatured, &video.IsMultipleImages,
-			&video.ImageUrls, &video.CreatedAt, &video.UpdatedAt,
+			&video.ImageUrls, &video.CreatedAt, &video.UpdatedAt, &userRole,
 		)
 		if err != nil {
 			return nil, err
@@ -318,30 +423,36 @@ func (s *VideoService) GetFeaturedVideosOptimized(ctx context.Context, limit int
 		// Apply URL optimizations
 		s.applyURLOptimizations(&video)
 		video.UserProfileImage = video.UserImage
+
+		// 🆕 NEW: Add role information
+		video.UserRole = userRole.String()
+		video.UserCanPost = userRole.CanPost()
+
 		videos = append(videos, video)
 	}
 
 	return videos, nil
 }
 
-// 🚀 OPTIMIZED: GetTrendingVideosOptimized with improved algorithm
+// 🚀 OPTIMIZED: GetTrendingVideosOptimized with improved algorithm and role info
 func (s *VideoService) GetTrendingVideosOptimized(ctx context.Context, limit int) ([]models.VideoResponse, error) {
 	// Enhanced trending algorithm with better time decay and engagement weights
 	query := `
 		SELECT 
-			id, user_id, user_name, user_image, video_url, thumbnail_url,
-			caption, likes_count, comments_count, views_count, shares_count,
-			tags, is_active, is_featured, is_multiple_images, image_urls,
-			created_at, updated_at,
+			v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
+			v.caption, v.likes_count, v.comments_count, v.views_count, v.shares_count,
+			v.tags, v.is_active, v.is_featured, v.is_multiple_images, v.image_urls,
+			v.created_at, v.updated_at, u.role as user_role,
 			CASE 
-				WHEN EXTRACT(EPOCH FROM (NOW() - created_at)) > 0 THEN
-					(likes_count * 2.5 + comments_count * 3.5 + shares_count * 5.0 + views_count * 0.1) 
-					/ POWER(EXTRACT(EPOCH FROM (NOW() - created_at))/3600 + 1, 1.8)
-				ELSE likes_count * 2.5 + comments_count * 3.5 + shares_count * 5.0 
+				WHEN EXTRACT(EPOCH FROM (NOW() - v.created_at)) > 0 THEN
+					(v.likes_count * 2.5 + v.comments_count * 3.5 + v.shares_count * 5.0 + v.views_count * 0.1) 
+					/ POWER(EXTRACT(EPOCH FROM (NOW() - v.created_at))/3600 + 1, 1.8)
+				ELSE v.likes_count * 2.5 + v.comments_count * 3.5 + v.shares_count * 5.0 
 			END as trending_score
-		FROM videos 
-		WHERE is_active = true 
-		ORDER BY trending_score DESC, created_at DESC 
+		FROM videos v
+		JOIN users u ON v.user_id = u.uid
+		WHERE v.is_active = true AND u.is_active = true
+		ORDER BY trending_score DESC, v.created_at DESC 
 		LIMIT $1`
 
 	rows, err := s.db.QueryContext(ctx, query, limit)
@@ -353,6 +464,7 @@ func (s *VideoService) GetTrendingVideosOptimized(ctx context.Context, limit int
 	var videos []models.VideoResponse
 	for rows.Next() {
 		var video models.VideoResponse
+		var userRole models.UserRole
 		var trendingScore float64 // We select but don't need to return this
 
 		err := rows.Scan(
@@ -360,7 +472,7 @@ func (s *VideoService) GetTrendingVideosOptimized(ctx context.Context, limit int
 			&video.VideoURL, &video.ThumbnailURL, &video.Caption,
 			&video.LikesCount, &video.CommentsCount, &video.ViewsCount, &video.SharesCount,
 			&video.Tags, &video.IsActive, &video.IsFeatured, &video.IsMultipleImages,
-			&video.ImageUrls, &video.CreatedAt, &video.UpdatedAt, &trendingScore,
+			&video.ImageUrls, &video.CreatedAt, &video.UpdatedAt, &userRole, &trendingScore,
 		)
 		if err != nil {
 			return nil, err
@@ -369,30 +481,38 @@ func (s *VideoService) GetTrendingVideosOptimized(ctx context.Context, limit int
 		// Apply URL optimizations
 		s.applyURLOptimizations(&video)
 		video.UserProfileImage = video.UserImage
+
+		// 🆕 NEW: Add role information
+		video.UserRole = userRole.String()
+		video.UserCanPost = userRole.CanPost()
+
 		videos = append(videos, video)
 	}
 
 	return videos, nil
 }
 
-// 🚀 OPTIMIZED: GetVideoOptimized with URL optimization and better caching
+// 🚀 OPTIMIZED: GetVideoOptimized with URL optimization and role info
 func (s *VideoService) GetVideoOptimized(ctx context.Context, videoID string) (*models.VideoResponse, error) {
 	query := `
 		SELECT 
-			id, user_id, user_name, user_image, video_url, thumbnail_url,
-			caption, likes_count, comments_count, views_count, shares_count,
-			tags, is_active, is_featured, is_multiple_images, image_urls,
-			created_at, updated_at
-		FROM videos 
-		WHERE id = $1 AND is_active = true`
+			v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
+			v.caption, v.likes_count, v.comments_count, v.views_count, v.shares_count,
+			v.tags, v.is_active, v.is_featured, v.is_multiple_images, v.image_urls,
+			v.created_at, v.updated_at, u.role as user_role
+		FROM videos v
+		JOIN users u ON v.user_id = u.uid
+		WHERE v.id = $1 AND v.is_active = true AND u.is_active = true`
 
 	var video models.VideoResponse
+	var userRole models.UserRole
+
 	err := s.db.QueryRowContext(ctx, query, videoID).Scan(
 		&video.ID, &video.UserID, &video.UserName, &video.UserImage,
 		&video.VideoURL, &video.ThumbnailURL, &video.Caption,
 		&video.LikesCount, &video.CommentsCount, &video.ViewsCount, &video.SharesCount,
 		&video.Tags, &video.IsActive, &video.IsFeatured, &video.IsMultipleImages,
-		&video.ImageUrls, &video.CreatedAt, &video.UpdatedAt,
+		&video.ImageUrls, &video.CreatedAt, &video.UpdatedAt, &userRole,
 	)
 	if err != nil {
 		return nil, err
@@ -401,6 +521,10 @@ func (s *VideoService) GetVideoOptimized(ctx context.Context, videoID string) (*
 	// Apply URL optimizations
 	s.applyURLOptimizations(&video)
 	video.UserProfileImage = video.UserImage
+
+	// 🆕 NEW: Add role information
+	video.UserRole = userRole.String()
+	video.UserCanPost = userRole.CanPost()
 
 	// 🚀 OPTIMIZED: Async view increment with better performance
 	go func() {
@@ -413,17 +537,18 @@ func (s *VideoService) GetVideoOptimized(ctx context.Context, videoID string) (*
 	return &video, nil
 }
 
-// 🚀 OPTIMIZED: GetUserVideosOptimized with URL optimization
+// 🚀 OPTIMIZED: GetUserVideosOptimized with URL optimization and role info
 func (s *VideoService) GetUserVideosOptimized(ctx context.Context, userID string, limit, offset int) ([]models.VideoResponse, error) {
 	query := `
 		SELECT 
-			id, user_id, user_name, user_image, video_url, thumbnail_url,
-			caption, likes_count, comments_count, views_count, shares_count,
-			tags, is_active, is_featured, is_multiple_images, image_urls,
-			created_at, updated_at
-		FROM videos 
-		WHERE user_id = $1 AND is_active = true 
-		ORDER BY created_at DESC 
+			v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
+			v.caption, v.likes_count, v.comments_count, v.views_count, v.shares_count,
+			v.tags, v.is_active, v.is_featured, v.is_multiple_images, v.image_urls,
+			v.created_at, v.updated_at, u.role as user_role
+		FROM videos v
+		JOIN users u ON v.user_id = u.uid
+		WHERE v.user_id = $1 AND v.is_active = true AND u.is_active = true
+		ORDER BY v.created_at DESC 
 		LIMIT $2 OFFSET $3`
 
 	rows, err := s.db.QueryContext(ctx, query, userID, limit, offset)
@@ -435,12 +560,14 @@ func (s *VideoService) GetUserVideosOptimized(ctx context.Context, userID string
 	var videos []models.VideoResponse
 	for rows.Next() {
 		var video models.VideoResponse
+		var userRole models.UserRole
+
 		err := rows.Scan(
 			&video.ID, &video.UserID, &video.UserName, &video.UserImage,
 			&video.VideoURL, &video.ThumbnailURL, &video.Caption,
 			&video.LikesCount, &video.CommentsCount, &video.ViewsCount, &video.SharesCount,
 			&video.Tags, &video.IsActive, &video.IsFeatured, &video.IsMultipleImages,
-			&video.ImageUrls, &video.CreatedAt, &video.UpdatedAt,
+			&video.ImageUrls, &video.CreatedAt, &video.UpdatedAt, &userRole,
 		)
 		if err != nil {
 			return nil, err
@@ -449,22 +576,28 @@ func (s *VideoService) GetUserVideosOptimized(ctx context.Context, userID string
 		// Apply URL optimizations
 		s.applyURLOptimizations(&video)
 		video.UserProfileImage = video.UserImage
+
+		// 🆕 NEW: Add role information
+		video.UserRole = userRole.String()
+		video.UserCanPost = userRole.CanPost()
+
 		videos = append(videos, video)
 	}
 
 	return videos, nil
 }
 
-// 🚀 OPTIMIZED: GetUserLikedVideosOptimized with URL optimization
+// 🚀 OPTIMIZED: GetUserLikedVideosOptimized with URL optimization and role info
 func (s *VideoService) GetUserLikedVideosOptimized(ctx context.Context, userID string, limit, offset int) ([]models.VideoResponse, error) {
 	query := `
 		SELECT v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
 		       v.caption, v.likes_count, v.comments_count, v.views_count, v.shares_count,
 		       v.tags, v.is_active, v.is_featured, v.is_multiple_images, v.image_urls,
-		       v.created_at, v.updated_at
+		       v.created_at, v.updated_at, u.role as user_role
 		FROM videos v
 		JOIN video_likes vl ON v.id = vl.video_id
-		WHERE vl.user_id = $1 AND v.is_active = true
+		JOIN users u ON v.user_id = u.uid
+		WHERE vl.user_id = $1 AND v.is_active = true AND u.is_active = true
 		ORDER BY vl.created_at DESC
 		LIMIT $2 OFFSET $3`
 
@@ -477,12 +610,14 @@ func (s *VideoService) GetUserLikedVideosOptimized(ctx context.Context, userID s
 	var videos []models.VideoResponse
 	for rows.Next() {
 		var video models.VideoResponse
+		var userRole models.UserRole
+
 		err := rows.Scan(
 			&video.ID, &video.UserID, &video.UserName, &video.UserImage,
 			&video.VideoURL, &video.ThumbnailURL, &video.Caption,
 			&video.LikesCount, &video.CommentsCount, &video.ViewsCount, &video.SharesCount,
 			&video.Tags, &video.IsActive, &video.IsFeatured, &video.IsMultipleImages,
-			&video.ImageUrls, &video.CreatedAt, &video.UpdatedAt,
+			&video.ImageUrls, &video.CreatedAt, &video.UpdatedAt, &userRole,
 		)
 		if err != nil {
 			return nil, err
@@ -492,14 +627,25 @@ func (s *VideoService) GetUserLikedVideosOptimized(ctx context.Context, userID s
 		s.applyURLOptimizations(&video)
 		video.UserProfileImage = video.UserImage
 		video.IsLiked = true // These are liked videos
+
+		// 🆕 NEW: Add role information
+		video.UserRole = userRole.String()
+		video.UserCanPost = userRole.CanPost()
+
 		videos = append(videos, video)
 	}
 
 	return videos, nil
 }
 
-// 🚀 OPTIMIZED: CreateVideoOptimized with better validation
+// 🚀 UPDATED: CreateVideoOptimized with role validation
 func (s *VideoService) CreateVideoOptimized(ctx context.Context, video *models.Video) (string, error) {
+	// 🆕 NEW: Validate user can create videos based on role
+	user, err := s.ValidateUserCanCreateVideo(ctx, video.UserID)
+	if err != nil {
+		return "", fmt.Errorf("video creation validation failed: %w", err)
+	}
+
 	// Enhanced validation
 	if !video.IsValidForCreation() {
 		errors := video.ValidateForCreation()
@@ -516,9 +662,20 @@ func (s *VideoService) CreateVideoOptimized(ctx context.Context, video *models.V
 	video.ViewsCount = 0
 	video.SharesCount = 0
 
+	// Ensure user info is from validated user
+	video.UserName = user.Name
+	video.UserImage = user.ProfileImage
+
 	// Optimize URLs before storing
 	video.VideoURL = s.optimizeVideoURL(video.VideoURL)
 	video.ThumbnailURL = s.optimizeThumbnailURL(video.ThumbnailURL)
+
+	// Start transaction for consistent data
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback()
 
 	// Optimized insert query
 	query := `
@@ -534,8 +691,27 @@ func (s *VideoService) CreateVideoOptimized(ctx context.Context, video *models.V
 			:created_at, :updated_at
 		)`
 
-	_, err := s.db.NamedExecContext(ctx, query, video)
-	return video.ID, err
+	_, err = tx.NamedExecContext(ctx, query, video)
+	if err != nil {
+		return "", fmt.Errorf("failed to insert video: %w", err)
+	}
+
+	// Update user's last post timestamp and video count (handled by database trigger)
+	// But we can also update it manually for immediate consistency
+	_, err = tx.ExecContext(ctx, `
+		UPDATE users 
+		SET last_post_at = $1, updated_at = $1 
+		WHERE uid = $2`,
+		video.CreatedAt, video.UserID)
+	if err != nil {
+		return "", fmt.Errorf("failed to update user last post: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return "", fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return video.ID, nil
 }
 
 // ===============================
@@ -679,8 +855,127 @@ func (s *VideoService) BatchUpdateViewCounts(ctx context.Context) error {
 }
 
 // ===============================
+// 🆕 NEW: ROLE-BASED ANALYTICS AND REPORTING
+// ===============================
+
+// 🆕 NEW: GetVideoStatsByRole returns video statistics grouped by user roles
+func (s *VideoService) GetVideoStatsByRole(ctx context.Context) (map[string]interface{}, error) {
+	query := `
+		SELECT 
+			u.role,
+			COUNT(v.id) as video_count,
+			COALESCE(SUM(v.views_count), 0) as total_views,
+			COALESCE(SUM(v.likes_count), 0) as total_likes,
+			COALESCE(SUM(v.comments_count), 0) as total_comments,
+			COALESCE(AVG(v.views_count), 0) as avg_views,
+			COALESCE(AVG(v.likes_count), 0) as avg_likes
+		FROM videos v
+		JOIN users u ON v.user_id = u.uid
+		WHERE v.is_active = true AND u.is_active = true
+		GROUP BY u.role
+		ORDER BY video_count DESC`
+
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	stats := make(map[string]interface{})
+	var totalVideos int
+	var totalViews int64
+	var totalLikes int64
+
+	for rows.Next() {
+		var role string
+		var videoCount int
+		var views, likes, comments int64
+		var avgViews, avgLikes float64
+
+		err := rows.Scan(&role, &videoCount, &views, &likes, &comments, &avgViews, &avgLikes)
+		if err != nil {
+			return nil, err
+		}
+
+		stats[role] = map[string]interface{}{
+			"videoCount":    videoCount,
+			"totalViews":    views,
+			"totalLikes":    likes,
+			"totalComments": comments,
+			"avgViews":      avgViews,
+			"avgLikes":      avgLikes,
+		}
+
+		totalVideos += videoCount
+		totalViews += views
+		totalLikes += likes
+	}
+
+	// Add overall statistics
+	stats["overall"] = map[string]interface{}{
+		"totalVideos": totalVideos,
+		"totalViews":  totalViews,
+		"totalLikes":  totalLikes,
+	}
+
+	return stats, nil
+}
+
+// 🆕 NEW: GetTopContentCreators returns top video creators by role
+func (s *VideoService) GetTopContentCreators(ctx context.Context, limit int) ([]map[string]interface{}, error) {
+	query := `
+		SELECT 
+			u.uid,
+			u.name,
+			u.role,
+			u.profile_image,
+			COUNT(v.id) as video_count,
+			COALESCE(SUM(v.views_count), 0) as total_views,
+			COALESCE(SUM(v.likes_count), 0) as total_likes,
+			COALESCE(AVG(v.views_count), 0) as avg_views
+		FROM users u
+		JOIN videos v ON u.uid = v.user_id
+		WHERE u.is_active = true AND v.is_active = true AND u.role IN ('admin', 'host')
+		GROUP BY u.uid, u.name, u.role, u.profile_image
+		ORDER BY total_views DESC, total_likes DESC
+		LIMIT $1`
+
+	rows, err := s.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var creators []map[string]interface{}
+	for rows.Next() {
+		var uid, name, role, profileImage string
+		var videoCount int
+		var totalViews, totalLikes int64
+		var avgViews float64
+
+		err := rows.Scan(&uid, &name, &role, &profileImage, &videoCount, &totalViews, &totalLikes, &avgViews)
+		if err != nil {
+			return nil, err
+		}
+
+		creators = append(creators, map[string]interface{}{
+			"uid":          uid,
+			"name":         name,
+			"role":         role,
+			"profileImage": s.optimizeThumbnailURL(profileImage),
+			"videoCount":   videoCount,
+			"totalViews":   totalViews,
+			"totalLikes":   totalLikes,
+			"avgViews":     avgViews,
+		})
+	}
+
+	return creators, nil
+}
+
+// ===============================
 // PRESERVED METHODS WITH OPTIMIZATIONS APPLIED
-// All existing functionality maintained with performance improvements
+// All existing functionality maintained with performance improvements and role awareness
 // ===============================
 
 func (s *VideoService) UpdateVideo(ctx context.Context, video *models.Video) error {
@@ -817,11 +1112,13 @@ func (s *VideoService) DeleteComment(ctx context.Context, commentID, userID stri
 
 	if authorID != userID {
 		var userType string
-		err = s.db.QueryRowContext(ctx, "SELECT user_type FROM users WHERE uid = $1", userID).Scan(&userType)
+		var userRole models.UserRole
+		err = s.db.QueryRowContext(ctx, "SELECT user_type, role FROM users WHERE uid = $1", userID).Scan(&userType, &userRole)
 		if err != nil {
 			return err
 		}
-		if userType != "admin" && userType != "moderator" {
+		// 🆕 UPDATED: Check both old user_type and new role system
+		if userType != "admin" && userType != "moderator" && userRole != models.UserRoleAdmin {
 			return errors.New("access_denied")
 		}
 	}
@@ -882,7 +1179,7 @@ func (s *VideoService) UnlikeComment(ctx context.Context, commentID, userID stri
 }
 
 // ===============================
-// PRESERVED SOCIAL OPERATIONS
+// PRESERVED SOCIAL OPERATIONS WITH ROLE AWARENESS
 // ===============================
 
 func (s *VideoService) FollowUser(ctx context.Context, followerID, followingID string) error {
@@ -928,9 +1225,14 @@ func (s *VideoService) CheckUserFollowing(ctx context.Context, followerID, follo
 	return count > 0, err
 }
 
+// 🚀 UPDATED: GetUserFollowers with role information
 func (s *VideoService) GetUserFollowers(ctx context.Context, userID string, limit, offset int) ([]models.User, error) {
 	query := `
-		SELECT u.* FROM users u
+		SELECT u.uid, u.name, u.phone_number, u.whatsapp_number, u.profile_image, u.cover_image, u.bio,
+		       u.user_type, u.role, u.followers_count, u.following_count, u.videos_count, u.likes_count,
+		       u.is_verified, u.is_active, u.is_featured, u.tags,
+		       u.created_at, u.updated_at, u.last_seen, u.last_post_at
+		FROM users u
 		JOIN user_follows uf ON u.uid = uf.follower_id
 		WHERE uf.following_id = $1 AND u.is_active = true
 		ORDER BY uf.created_at DESC
@@ -941,9 +1243,14 @@ func (s *VideoService) GetUserFollowers(ctx context.Context, userID string, limi
 	return users, err
 }
 
+// 🚀 UPDATED: GetUserFollowing with role information
 func (s *VideoService) GetUserFollowing(ctx context.Context, userID string, limit, offset int) ([]models.User, error) {
 	query := `
-		SELECT u.* FROM users u
+		SELECT u.uid, u.name, u.phone_number, u.whatsapp_number, u.profile_image, u.cover_image, u.bio,
+		       u.user_type, u.role, u.followers_count, u.following_count, u.videos_count, u.likes_count,
+		       u.is_verified, u.is_active, u.is_featured, u.tags,
+		       u.created_at, u.updated_at, u.last_seen, u.last_post_at
+		FROM users u
 		JOIN user_follows uf ON u.uid = uf.following_id
 		WHERE uf.follower_id = $1 AND u.is_active = true
 		ORDER BY uf.created_at DESC
@@ -954,15 +1261,17 @@ func (s *VideoService) GetUserFollowing(ctx context.Context, userID string, limi
 	return users, err
 }
 
+// 🚀 UPDATED: GetFollowingVideoFeed with role information
 func (s *VideoService) GetFollowingVideoFeed(ctx context.Context, userID string, limit, offset int) ([]models.VideoResponse, error) {
 	query := `
 		SELECT v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
 		       v.caption, v.likes_count, v.comments_count, v.views_count, v.shares_count,
 		       v.tags, v.is_active, v.is_featured, v.is_multiple_images, v.image_urls,
-		       v.created_at, v.updated_at
+		       v.created_at, v.updated_at, u.role as user_role
 		FROM videos v
 		JOIN user_follows uf ON v.user_id = uf.following_id
-		WHERE uf.follower_id = $1 AND v.is_active = true
+		JOIN users u ON v.user_id = u.uid
+		WHERE uf.follower_id = $1 AND v.is_active = true AND u.is_active = true
 		ORDER BY v.created_at DESC
 		LIMIT $2 OFFSET $3`
 
@@ -975,12 +1284,14 @@ func (s *VideoService) GetFollowingVideoFeed(ctx context.Context, userID string,
 	var videos []models.VideoResponse
 	for rows.Next() {
 		var video models.VideoResponse
+		var userRole models.UserRole
+
 		err := rows.Scan(
 			&video.ID, &video.UserID, &video.UserName, &video.UserImage,
 			&video.VideoURL, &video.ThumbnailURL, &video.Caption,
 			&video.LikesCount, &video.CommentsCount, &video.ViewsCount, &video.SharesCount,
 			&video.Tags, &video.IsActive, &video.IsFeatured, &video.IsMultipleImages,
-			&video.ImageUrls, &video.CreatedAt, &video.UpdatedAt,
+			&video.ImageUrls, &video.CreatedAt, &video.UpdatedAt, &userRole,
 		)
 		if err != nil {
 			return nil, err
@@ -990,6 +1301,11 @@ func (s *VideoService) GetFollowingVideoFeed(ctx context.Context, userID string,
 		s.applyURLOptimizations(&video)
 		video.UserProfileImage = video.UserImage
 		video.IsFollowing = true // These are from followed users
+
+		// 🆕 NEW: Add role information
+		video.UserRole = userRole.String()
+		video.UserCanPost = userRole.CanPost()
+
 		videos = append(videos, video)
 	}
 
@@ -1077,283 +1393,4 @@ func (s *VideoService) GetVideoStats(ctx context.Context, userID string) ([]mode
 	}
 
 	return stats, nil
-}
-
-// ===============================
-// PRESERVED ADVANCED OPERATIONS WITH OPTIMIZATIONS
-// ===============================
-
-func (s *VideoService) GetTrendingVideosAdvanced(ctx context.Context, limit int, timeWindow string) ([]models.VideoResponse, error) {
-	var timeCondition string
-	switch timeWindow {
-	case "hour":
-		timeCondition = "created_at >= NOW() - INTERVAL '1 hour'"
-	case "day":
-		timeCondition = "created_at >= NOW() - INTERVAL '1 day'"
-	case "week":
-		timeCondition = "created_at >= NOW() - INTERVAL '1 week'"
-	default:
-		timeCondition = "created_at >= NOW() - INTERVAL '1 day'"
-	}
-
-	query := fmt.Sprintf(`
-		SELECT 
-			id, user_id, user_name, user_image, video_url, thumbnail_url,
-			caption, likes_count, comments_count, views_count, shares_count,
-			tags, is_active, is_featured, is_multiple_images, image_urls,
-			created_at, updated_at,
-			CASE 
-				WHEN EXTRACT(EPOCH FROM (NOW() - created_at)) > 0 THEN
-					(likes_count * 2.5 + comments_count * 3.5 + shares_count * 5.0 + views_count * 0.1) 
-					/ POWER(EXTRACT(EPOCH FROM (NOW() - created_at))/3600 + 1, 1.8)
-				ELSE likes_count * 2.5 + comments_count * 3.5 + shares_count * 5.0 
-			END as trending_score
-		FROM videos 
-		WHERE is_active = true AND %s
-		ORDER BY trending_score DESC, created_at DESC 
-		LIMIT $1`, timeCondition)
-
-	rows, err := s.db.QueryContext(ctx, query, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var videos []models.VideoResponse
-	for rows.Next() {
-		var video models.VideoResponse
-		var trendingScore float64
-
-		err := rows.Scan(
-			&video.ID, &video.UserID, &video.UserName, &video.UserImage,
-			&video.VideoURL, &video.ThumbnailURL, &video.Caption,
-			&video.LikesCount, &video.CommentsCount, &video.ViewsCount, &video.SharesCount,
-			&video.Tags, &video.IsActive, &video.IsFeatured, &video.IsMultipleImages,
-			&video.ImageUrls, &video.CreatedAt, &video.UpdatedAt, &trendingScore,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		// Apply URL optimizations
-		s.applyURLOptimizations(&video)
-		video.UserProfileImage = video.UserImage
-		videos = append(videos, video)
-	}
-
-	return videos, nil
-}
-
-func (s *VideoService) GetVideoPerformanceMetrics(ctx context.Context, videoID string) (*models.VideoStatsResponse, error) {
-	query := `
-		SELECT 
-			id, views_count, likes_count, comments_count, shares_count, created_at
-		FROM videos 
-		WHERE id = $1 AND is_active = true`
-
-	var stats models.VideoStatsResponse
-	var createdAt time.Time
-
-	err := s.db.QueryRowContext(ctx, query, videoID).Scan(
-		&stats.VideoID, &stats.ViewsCount, &stats.LikesCount,
-		&stats.CommentsCount, &stats.SharesCount, &createdAt,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// Calculate engagement rate
-	if stats.ViewsCount > 0 {
-		totalEngagement := stats.LikesCount + stats.CommentsCount + stats.SharesCount
-		stats.EngagementRate = (float64(totalEngagement) / float64(stats.ViewsCount)) * 100
-	}
-
-	// Calculate trending score
-	hoursOld := time.Since(createdAt).Hours()
-	if hoursOld > 0 {
-		engagementScore := float64(stats.LikesCount*2 + stats.CommentsCount*3 + stats.SharesCount*5 + stats.ViewsCount)
-		timeDecay := 1.0 / (1.0 + hoursOld/24.0)
-		stats.TrendingScore = engagementScore * timeDecay
-	}
-
-	return &stats, nil
-}
-
-func (s *VideoService) GetUserEngagementSummary(ctx context.Context, userID string) (map[string]interface{}, error) {
-	query := `
-		SELECT 
-			COUNT(*) as total_videos,
-			COALESCE(SUM(views_count), 0) as total_views,
-			COALESCE(SUM(likes_count), 0) as total_likes,
-			COALESCE(SUM(comments_count), 0) as total_comments,
-			COALESCE(SUM(shares_count), 0) as total_shares,
-			COALESCE(AVG(views_count), 0) as avg_views,
-			COALESCE(AVG(likes_count), 0) as avg_likes,
-			MAX(views_count) as max_views,
-			MIN(CASE WHEN views_count > 0 THEN views_count END) as min_views
-		FROM videos 
-		WHERE user_id = $1 AND is_active = true`
-
-	var summary struct {
-		TotalVideos   int     `db:"total_videos"`
-		TotalViews    int     `db:"total_views"`
-		TotalLikes    int     `db:"total_likes"`
-		TotalComments int     `db:"total_comments"`
-		TotalShares   int     `db:"total_shares"`
-		AvgViews      float64 `db:"avg_views"`
-		AvgLikes      float64 `db:"avg_likes"`
-		MaxViews      int     `db:"max_views"`
-		MinViews      *int    `db:"min_views"`
-	}
-
-	err := s.db.QueryRowContext(ctx, query, userID).Scan(
-		&summary.TotalVideos, &summary.TotalViews, &summary.TotalLikes,
-		&summary.TotalComments, &summary.TotalShares, &summary.AvgViews,
-		&summary.AvgLikes, &summary.MaxViews, &summary.MinViews,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// Calculate overall engagement rate
-	var engagementRate float64
-	if summary.TotalViews > 0 {
-		totalEngagement := summary.TotalLikes + summary.TotalComments + summary.TotalShares
-		engagementRate = (float64(totalEngagement) / float64(summary.TotalViews)) * 100
-	}
-
-	result := map[string]interface{}{
-		"totalVideos":    summary.TotalVideos,
-		"totalViews":     summary.TotalViews,
-		"totalLikes":     summary.TotalLikes,
-		"totalComments":  summary.TotalComments,
-		"totalShares":    summary.TotalShares,
-		"avgViews":       summary.AvgViews,
-		"avgLikes":       summary.AvgLikes,
-		"maxViews":       summary.MaxViews,
-		"minViews":       summary.MinViews,
-		"engagementRate": engagementRate,
-		"optimized":      true,
-	}
-
-	return result, nil
-}
-
-func (s *VideoService) SearchVideosAdvanced(ctx context.Context, params models.VideoSearchParams) ([]models.VideoResponse, error) {
-	baseQuery := `
-		SELECT 
-			id, user_id, user_name, user_image, video_url, thumbnail_url,
-			caption, likes_count, comments_count, views_count, shares_count,
-			tags, is_active, is_featured, is_multiple_images, image_urls,
-			created_at, updated_at
-		FROM videos 
-		WHERE is_active = true`
-
-	var conditions []string
-	var args []interface{}
-	argIndex := 1
-
-	// Text search optimization
-	if params.Query != "" {
-		conditions = append(conditions, fmt.Sprintf("(caption ILIKE $%d OR user_name ILIKE $%d)", argIndex, argIndex))
-		searchPattern := "%" + params.Query + "%"
-		args = append(args, searchPattern)
-		argIndex++
-	}
-
-	if params.UserID != "" {
-		conditions = append(conditions, fmt.Sprintf("user_id = $%d", argIndex))
-		args = append(args, params.UserID)
-		argIndex++
-	}
-
-	if params.Featured != nil {
-		conditions = append(conditions, fmt.Sprintf("is_featured = $%d", argIndex))
-		args = append(args, *params.Featured)
-		argIndex++
-	}
-
-	if params.MediaType != "" && params.MediaType != "all" {
-		if params.MediaType == "image" {
-			conditions = append(conditions, "is_multiple_images = true")
-		} else if params.MediaType == "video" {
-			conditions = append(conditions, "is_multiple_images = false")
-		}
-	}
-
-	if len(params.Tags) > 0 {
-		for i := range params.Tags {
-			conditions = append(conditions, fmt.Sprintf("$%d = ANY(tags)", argIndex+i))
-		}
-		for _, tag := range params.Tags {
-			args = append(args, tag)
-		}
-		argIndex += len(params.Tags)
-	}
-
-	// Build final query
-	query := baseQuery
-	if len(conditions) > 0 {
-		query += " AND " + strings.Join(conditions, " AND ")
-	}
-
-	// Add optimized sorting
-	switch params.SortBy {
-	case "popular":
-		query += " ORDER BY likes_count DESC, views_count DESC, created_at DESC"
-	case "trending":
-		query += ` ORDER BY (
-			CASE 
-				WHEN EXTRACT(EPOCH FROM (NOW() - created_at)) > 0 THEN
-					(likes_count * 2.5 + comments_count * 3.5 + shares_count * 5.0 + views_count * 0.1) 
-					/ POWER(EXTRACT(EPOCH FROM (NOW() - created_at))/3600 + 1, 1.8)
-				ELSE likes_count * 2.5 + comments_count * 3.5 + shares_count * 5.0 
-			END
-		) DESC, created_at DESC`
-	case "views":
-		query += " ORDER BY views_count DESC, created_at DESC"
-	case "likes":
-		query += " ORDER BY likes_count DESC, created_at DESC"
-	default:
-		query += " ORDER BY created_at DESC"
-	}
-
-	// Add pagination
-	if params.Limit <= 0 {
-		params.Limit = 20
-	}
-	if params.Limit > 100 {
-		params.Limit = 100
-	}
-
-	query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", argIndex, argIndex+1)
-	args = append(args, params.Limit, params.Offset)
-
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var videos []models.VideoResponse
-	for rows.Next() {
-		var video models.VideoResponse
-		err := rows.Scan(
-			&video.ID, &video.UserID, &video.UserName, &video.UserImage,
-			&video.VideoURL, &video.ThumbnailURL, &video.Caption,
-			&video.LikesCount, &video.CommentsCount, &video.ViewsCount, &video.SharesCount,
-			&video.Tags, &video.IsActive, &video.IsFeatured, &video.IsMultipleImages,
-			&video.ImageUrls, &video.CreatedAt, &video.UpdatedAt,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		// Apply URL optimizations
-		s.applyURLOptimizations(&video)
-		video.UserProfileImage = video.UserImage
-		videos = append(videos, video)
-	}
-
-	return videos, nil
 }
