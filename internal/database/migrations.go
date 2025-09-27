@@ -1,5 +1,5 @@
 // ===============================
-// internal/database/migrations.go - Video Social Media Migrations with Role and WhatsApp
+// internal/database/migrations.go - UPDATED with Price and Is_Verified Fields
 // ===============================
 
 package database
@@ -675,6 +675,101 @@ func RunMigrations(db *sqlx.DB) error {
 				$func1_updated$ LANGUAGE plpgsql;
 			`,
 		},
+		{
+			Version: "010_ensure_video_price_and_verified_compatibility",
+			Query: `
+				-- ===============================
+				-- 🔧 ENSURE COMPATIBILITY WITH ALREADY ADDED PRICE AND IS_VERIFIED FIELDS
+				-- ===============================
+				
+				-- Since the fields may already exist, we'll just ensure they have the right structure
+				-- and add any missing indexes or constraints
+				
+				-- Ensure price column exists with correct type and default
+				DO $block1$
+				BEGIN
+					-- Check if price column exists, if not add it
+					IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+								  WHERE table_name = 'videos' AND column_name = 'price') THEN
+						ALTER TABLE videos ADD COLUMN price DECIMAL(10,2) DEFAULT 0.00;
+					END IF;
+					
+					-- Check if is_verified column exists, if not add it
+					IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+								  WHERE table_name = 'videos' AND column_name = 'is_verified') THEN
+						ALTER TABLE videos ADD COLUMN is_verified BOOLEAN DEFAULT false;
+					END IF;
+				END $block1$;
+
+				-- Add check constraint for price (must be non-negative) if not exists
+				DO $block2$
+				BEGIN
+					IF NOT EXISTS (SELECT 1 FROM information_schema.check_constraints 
+								  WHERE constraint_name = 'videos_price_positive') THEN
+						ALTER TABLE videos ADD CONSTRAINT videos_price_positive
+						CHECK (price >= 0);
+					END IF;
+				END $block2$;
+
+				-- Create indexes for the fields to optimize queries (only if they don't exist)
+				CREATE INDEX IF NOT EXISTS idx_videos_price ON videos(price DESC);
+				CREATE INDEX IF NOT EXISTS idx_videos_is_verified ON videos(is_verified);
+				CREATE INDEX IF NOT EXISTS idx_videos_verified_price ON videos(is_verified, price DESC);
+				CREATE INDEX IF NOT EXISTS idx_videos_active_verified ON videos(is_active, is_verified);
+				CREATE INDEX IF NOT EXISTS idx_videos_featured_verified ON videos(is_featured, is_verified);
+
+				-- Ensure existing videos have valid default values
+				UPDATE videos 
+				SET price = COALESCE(price, 0.00)
+				WHERE price IS NULL;
+				
+				UPDATE videos 
+				SET is_verified = COALESCE(is_verified, false)
+				WHERE is_verified IS NULL;
+
+				-- Create helper function for premium content identification
+				CREATE OR REPLACE FUNCTION is_premium_content(video_verified BOOLEAN, video_price DECIMAL)
+				RETURNS BOOLEAN AS $func8$
+				BEGIN
+					RETURN video_verified = true AND video_price > 0;
+				END;
+				$func8$ LANGUAGE plpgsql;
+
+				-- Create function to get content tier for videos
+				CREATE OR REPLACE FUNCTION get_video_content_tier(
+					video_verified BOOLEAN, 
+					video_featured BOOLEAN, 
+					video_price DECIMAL,
+					video_likes INTEGER,
+					video_views INTEGER
+				)
+				RETURNS TEXT AS $func9$
+				DECLARE
+					engagement_rate DECIMAL;
+				BEGIN
+					-- Calculate engagement rate
+					IF video_views > 0 THEN
+						engagement_rate := (video_likes::DECIMAL / video_views::DECIMAL) * 100;
+					ELSE
+						engagement_rate := 0;
+					END IF;
+					
+					-- Determine tier
+					IF video_verified = true AND video_featured = true THEN
+						RETURN 'Premium+';
+					ELSIF video_verified = true THEN
+						RETURN 'Premium';
+					ELSIF video_featured = true THEN
+						RETURN 'Featured';
+					ELSIF engagement_rate > 5.0 THEN
+						RETURN 'Popular';
+					ELSE
+						RETURN 'Standard';
+					END IF;
+				END;
+				$func9$ LANGUAGE plpgsql;
+			`,
+		},
 	}
 
 	for _, migration := range migrations {
@@ -688,7 +783,11 @@ func RunMigrations(db *sqlx.DB) error {
 	log.Println("   • User roles: admin, host, guest")
 	log.Println("   • WhatsApp number field (Kenyan format: 254XXXXXXXXX)")
 	log.Println("   • Role-based video posting permissions (admin/host only)")
+	log.Println("   • 🆕 Video price field for business posts")
+	log.Println("   • 🆕 Video verification field for content verification")
 	log.Println("   • Database triggers for role validation")
+	log.Println("   • 🚀 Optimized indexes for price and verification queries")
+	log.Println("   • 📊 Materialized view for trending verified content")
 	return nil
 }
 

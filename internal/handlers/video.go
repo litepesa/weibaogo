@@ -1,5 +1,5 @@
 // ===============================
-// internal/handlers/video.go - UPDATED with Role-based Video Creation Validation
+// internal/handlers/video.go - UPDATED Video Handler with Simple Price and IsVerified Support
 // ===============================
 
 package handlers
@@ -655,7 +655,7 @@ func (h *VideoHandler) GetUserLikedVideos(c *gin.Context) {
 // 🚀 UPDATED: AUTHENTICATED VIDEO ENDPOINTS WITH ROLE VALIDATION
 // ===============================
 
-// 🚀 UPDATED: CreateVideo with role-based validation
+// 🚀 UPDATED: CreateVideo with role-based validation and price support
 func (h *VideoHandler) CreateVideo(c *gin.Context) {
 	h.setInteractionHeaders(c)
 
@@ -733,6 +733,14 @@ func (h *VideoHandler) CreateVideo(c *gin.Context) {
 		ImageUrls:        models.StringSlice(request.ImageUrls),
 	}
 
+	// 🔧 SIMPLE: Handle price field
+	if request.Price != nil {
+		if *request.Price >= 0 {
+			video.Price = *request.Price
+		}
+	}
+	// IsVerified defaults to false (admin sets it later)
+
 	videoID, err := h.service.CreateVideoOptimized(c.Request.Context(), video)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -748,6 +756,8 @@ func (h *VideoHandler) CreateVideo(c *gin.Context) {
 		"status":   "created",
 		"userRole": userRole.String(),
 		"canPost":  true,
+		"price":    video.Price,
+		"verified": video.IsVerified,
 	})
 }
 
@@ -1272,6 +1282,63 @@ func (h *VideoHandler) ToggleActive(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Video " + status + " successfully"})
 }
 
+// 🔧 SIMPLE: Add basic verification toggle endpoint
+func (h *VideoHandler) ToggleVerified(c *gin.Context) {
+	h.setInteractionHeaders(c)
+
+	videoID := c.Param("videoId")
+	if videoID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Video ID required"})
+		return
+	}
+
+	var request struct {
+		IsVerified bool `json:"isVerified"`
+	}
+
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Get video first to update it
+	video, err := h.service.GetVideoOptimized(c.Request.Context(), videoID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Video not found"})
+		return
+	}
+
+	// Convert response back to model for update
+	videoModel := &models.Video{
+		ID:               video.ID,
+		UserID:           video.UserID,
+		Caption:          video.Caption,
+		Price:            video.Price,
+		Tags:             video.Tags,
+		IsActive:         video.IsActive,
+		IsFeatured:       video.IsFeatured,
+		IsVerified:       request.IsVerified, // Update verification
+		IsMultipleImages: video.IsMultipleImages,
+	}
+
+	err = h.service.UpdateVideo(c.Request.Context(), videoModel)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update verification status"})
+		return
+	}
+
+	status := "verified"
+	if !request.IsVerified {
+		status = "unverified"
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":    "Video " + status + " successfully",
+		"videoId":    videoID,
+		"isVerified": request.IsVerified,
+	})
+}
+
 func (h *VideoHandler) GetVideoStats(c *gin.Context) {
 	h.setVideoListHeaders(c)
 
@@ -1326,7 +1393,9 @@ func (h *VideoHandler) HealthCheck(c *gin.Context) {
 			"url_optimization":  true,
 			"gzip_compression":  true,
 			"smart_caching":     true,
-			"role_validation":   true, // NEW: Role-based video creation
+			"role_validation":   true,
+			"price_support":     true, // NEW
+			"verification":      true, // NEW
 		},
 	})
 }
@@ -1358,6 +1427,8 @@ func (h *VideoHandler) GetVideoMetrics(c *gin.Context) {
 		"likes":          video.LikesCount,
 		"comments":       video.CommentsCount,
 		"shares":         video.SharesCount,
+		"price":          video.Price,      // NEW
+		"isVerified":     video.IsVerified, // NEW
 		"engagement":     totalEngagement,
 		"engagementRate": engagementRate,
 		"createdAt":      video.CreatedAt,
@@ -1596,6 +1667,8 @@ func (h *VideoHandler) GetVideoAnalytics(c *gin.Context) {
 		"likes":           video.LikesCount,
 		"comments":        video.CommentsCount,
 		"shares":          video.SharesCount,
+		"price":           video.Price,      // NEW
+		"isVerified":      video.IsVerified, // NEW
 		"totalEngagement": totalEngagement,
 		"engagementRate":  engagementRate,
 		"likeRate":        likeRate,
@@ -1607,7 +1680,7 @@ func (h *VideoHandler) GetVideoAnalytics(c *gin.Context) {
 		"updatedAt":       video.UpdatedAt,
 		"performance":     "good",
 		"optimized":       true,
-		"roleValidation":  true, // NEW: Indicates role validation is enabled
+		"roleValidation":  true,
 		"cached_at":       time.Now().Unix(),
 		"ttl":             1800,
 	})

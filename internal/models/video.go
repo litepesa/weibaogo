@@ -1,5 +1,5 @@
 // ===============================
-// internal/models/video.go - Video Social Media Model (FIXED PostgreSQL Array Issue)
+// internal/models/video.go - Video Social Media Model (SIMPLE: Added Price and IsVerified)
 // ===============================
 
 package models
@@ -103,7 +103,7 @@ func (s *StringSlice) Scan(value interface{}) error {
 	return nil
 }
 
-// 🔧 FIXED: Video model with proper JSON tags for frontend compatibility
+// 🔧 UPDATED: Video model with price and isVerified fields
 type Video struct {
 	ID           string `json:"id" db:"id"`
 	UserID       string `json:"userId" db:"user_id" binding:"required"`
@@ -112,6 +112,9 @@ type Video struct {
 	VideoURL     string `json:"videoUrl" db:"video_url"`
 	ThumbnailURL string `json:"thumbnailUrl" db:"thumbnail_url"`
 	Caption      string `json:"caption" db:"caption"`
+
+	// 🆕 NEW: Price field for business/premium content
+	Price float64 `json:"price" db:"price"`
 
 	// 🔧 CRITICAL FIX: Map database fields to frontend-expected JSON names
 	LikesCount    int `json:"likes" db:"likes_count"`       // Frontend expects "likes"
@@ -122,6 +125,7 @@ type Video struct {
 	Tags             StringSlice `json:"tags" db:"tags"`
 	IsActive         bool        `json:"isActive" db:"is_active"`
 	IsFeatured       bool        `json:"isFeatured" db:"is_featured"`
+	IsVerified       bool        `json:"isVerified" db:"is_verified"` // 🆕 NEW: Verification field
 	IsMultipleImages bool        `json:"isMultipleImages" db:"is_multiple_images"`
 	ImageUrls        StringSlice `json:"imageUrls" db:"image_urls"`
 	CreatedAt        time.Time   `json:"createdAt" db:"created_at"`
@@ -132,7 +136,7 @@ type Video struct {
 	IsFollowing bool `json:"isFollowing" db:"-"`
 }
 
-// 🔧 NEW: VideoResponse struct for API responses with proper mapping
+// 🔧 UPDATED: VideoResponse struct for API responses with price and verification
 type VideoResponse struct {
 	ID           string `json:"id"`
 	UserID       string `json:"userId"`
@@ -141,6 +145,9 @@ type VideoResponse struct {
 	VideoURL     string `json:"videoUrl"`
 	ThumbnailURL string `json:"thumbnailUrl"`
 	Caption      string `json:"caption"`
+
+	// 🆕 NEW: Price field for business content
+	Price float64 `json:"price"`
 
 	// NEW: Role-related fields
 	UserRole    string `json:"userRole" db:"-"` // User's role (admin, host, guest)
@@ -155,6 +162,7 @@ type VideoResponse struct {
 	Tags             StringSlice `json:"tags"`
 	IsActive         bool        `json:"isActive"`
 	IsFeatured       bool        `json:"isFeatured"`
+	IsVerified       bool        `json:"isVerified"` // 🆕 NEW: Verification field
 	IsMultipleImages bool        `json:"isMultipleImages"`
 	ImageUrls        StringSlice `json:"imageUrls"`
 	CreatedAt        time.Time   `json:"createdAt"`
@@ -166,7 +174,7 @@ type VideoResponse struct {
 	UserProfileImage string `json:"userProfileImage"`
 }
 
-// 🔧 NEW: Convert Video to VideoResponse
+// 🔧 UPDATED: Convert Video to VideoResponse with price and verification
 func (v *Video) ToResponse() *VideoResponse {
 	return &VideoResponse{
 		ID:               v.ID,
@@ -176,6 +184,7 @@ func (v *Video) ToResponse() *VideoResponse {
 		VideoURL:         v.VideoURL,
 		ThumbnailURL:     v.ThumbnailURL,
 		Caption:          v.Caption,
+		Price:            v.Price, // 🆕 NEW: Include price
 		LikesCount:       v.LikesCount,
 		CommentsCount:    v.CommentsCount,
 		ViewsCount:       v.ViewsCount,
@@ -183,6 +192,7 @@ func (v *Video) ToResponse() *VideoResponse {
 		Tags:             v.Tags,
 		IsActive:         v.IsActive,
 		IsFeatured:       v.IsFeatured,
+		IsVerified:       v.IsVerified, // 🆕 NEW: Include verification
 		IsMultipleImages: v.IsMultipleImages,
 		ImageUrls:        v.ImageUrls,
 		CreatedAt:        v.CreatedAt,
@@ -273,6 +283,11 @@ func (v *Video) ValidateForCreation() []string {
 		errors = append(errors, "Video URL is required for video posts")
 	}
 
+	// 🆕 NEW: Price validation
+	if v.Price < 0 {
+		errors = append(errors, "Price cannot be negative")
+	}
+
 	return errors
 }
 
@@ -359,11 +374,12 @@ type UserFollow struct {
 	CreatedAt   time.Time `json:"createdAt" db:"created_at"`
 }
 
-// Video creation request models
+// 🔧 UPDATED: Video creation request models with price
 type CreateVideoRequest struct {
 	Caption          string   `json:"caption" binding:"required"`
 	VideoURL         string   `json:"videoUrl"`
 	ThumbnailURL     string   `json:"thumbnailUrl"`
+	Price            *float64 `json:"price"` // 🆕 NEW: Optional price field
 	Tags             []string `json:"tags"`
 	IsMultipleImages bool     `json:"isMultipleImages"`
 	ImageUrls        []string `json:"imageUrls"`
