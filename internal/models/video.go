@@ -1,5 +1,5 @@
 // ===============================
-// internal/models/video.go - Video Social Media Model (SIMPLE: Added Price and IsVerified)
+// internal/models/video.go - Video Social Media Model (COMPLETE VERSION WITH SEARCH)
 // ===============================
 
 package models
@@ -102,6 +102,69 @@ func (s *StringSlice) Scan(value interface{}) error {
 	*s = jsonSlice
 	return nil
 }
+
+// ===============================
+// SEARCH-RELATED MODELS
+// ===============================
+
+// SearchMode defines different search strategies
+type SearchMode string
+
+const (
+	SearchModeExact    SearchMode = "exact"    // Exact phrase matching
+	SearchModeFuzzy    SearchMode = "fuzzy"    // Handles typos and partial matches
+	SearchModeFullText SearchMode = "fulltext" // Full-text search with ranking
+	SearchModeCombined SearchMode = "combined" // Best of all methods
+)
+
+// SearchFilters for advanced filtering
+type SearchFilters struct {
+	UserID     string   `json:"userId"`
+	Tags       []string `json:"tags"`
+	MediaType  string   `json:"mediaType"` // "video", "image", "all"
+	TimeRange  string   `json:"timeRange"` // "day", "week", "month", "all"
+	SortBy     string   `json:"sortBy"`    // "relevance", "latest", "popular"
+	MinLikes   int      `json:"minLikes"`
+	HasPrice   *bool    `json:"hasPrice"`   // Filter by paid/free content
+	IsVerified *bool    `json:"isVerified"` // Filter by verified content
+}
+
+// SearchResult with relevance scoring
+type SearchResult struct {
+	Video     *VideoResponse `json:"video"`
+	Relevance float64        `json:"relevance"`
+	MatchType string         `json:"matchType"` // "caption", "username", "tag"
+}
+
+// SearchResponse with metadata
+type SearchResponse struct {
+	Results     []SearchResult `json:"results"`
+	Total       int            `json:"total"`
+	Query       string         `json:"query"`
+	SearchMode  SearchMode     `json:"searchMode"`
+	TimeTaken   int64          `json:"timeTaken"` // milliseconds
+	Suggestions []string       `json:"suggestions,omitempty"`
+	Page        int            `json:"page"`
+	HasMore     bool           `json:"hasMore"`
+}
+
+// SearchSuggestion for autocomplete
+type SearchSuggestion struct {
+	Text      string `json:"text"`
+	MatchType string `json:"matchType"` // "caption", "username", "popular"
+	Frequency int    `json:"frequency,omitempty"`
+}
+
+// PopularSearchTerm for trending searches
+type PopularSearchTerm struct {
+	Term      string `json:"term"`
+	Frequency int    `json:"frequency"`
+	LastUsed  string `json:"lastUsed"`
+}
+
+// ===============================
+// CORE VIDEO MODEL
+// ===============================
 
 // 🔧 UPDATED: Video model with price and isVerified fields
 type Video struct {
@@ -295,6 +358,10 @@ func (v *Video) IsValidForCreation() bool {
 	return len(v.ValidateForCreation()) == 0
 }
 
+// ===============================
+// COMMENT MODEL
+// ===============================
+
 // 🔧 FIXED: Comment model with proper JSON tags for frontend compatibility
 type Comment struct {
 	ID                  string    `json:"id" db:"id"`
@@ -350,6 +417,10 @@ func (c *Comment) ValidateForCreation() []string {
 	return errors
 }
 
+// ===============================
+// INTERACTION MODELS
+// ===============================
+
 // VideoLike model for tracking likes
 type VideoLike struct {
 	ID        string    `json:"id" db:"id"`
@@ -373,6 +444,10 @@ type UserFollow struct {
 	FollowingID string    `json:"followingId" db:"following_id"`
 	CreatedAt   time.Time `json:"createdAt" db:"created_at"`
 }
+
+// ===============================
+// REQUEST/RESPONSE MODELS
+// ===============================
 
 // 🔧 UPDATED: Video creation request models with price
 type CreateVideoRequest struct {
@@ -426,6 +501,10 @@ type VideoStatsResponse struct {
 	TrendingScore  float64 `json:"trendingScore"`
 }
 
+// ===============================
+// CONSTANTS AND LIMITS
+// ===============================
+
 // Video constants
 const (
 	MaxCaptionLength = 2200               // TikTok-style caption limit
@@ -436,6 +515,10 @@ const (
 	MaxImageFileSize = 50 * 1024 * 1024   // 50MB per image
 	MaxVideoDuration = 300                // 5 minutes in seconds
 )
+
+// ===============================
+// SEARCH AND FILTERING
+// ===============================
 
 // Video search and filtering
 type VideoSearchParams struct {
@@ -460,6 +543,10 @@ const (
 	SortByViews    VideoSortOption = "views"
 	SortByLikes    VideoSortOption = "likes"
 )
+
+// ===============================
+// PERFORMANCE METRICS
+// ===============================
 
 // Video performance metrics
 type VideoPerformance struct {
@@ -503,7 +590,10 @@ func CalculateTrendingScore(video *Video) float64 {
 	return engagementScore * timeDecay
 }
 
-// 🔧 ADDITIONAL FIX: Helper functions for StringSlice operations
+// ===============================
+// HELPER FUNCTIONS FOR STRINGSLICE
+// ===============================
+
 func NewStringSlice(items ...string) StringSlice {
 	if len(items) == 0 {
 		return StringSlice{}

@@ -1,5 +1,5 @@
 // ===============================
-// internal/handlers/video.go - UPDATED Video Handler with Simple Price and IsVerified Support
+// internal/handlers/video.go - COMPLETE UPDATED Video Handler with Search Support
 // ===============================
 
 package handlers
@@ -59,6 +59,180 @@ func (h *VideoHandler) setInteractionHeaders(c *gin.Context) {
 func (h *VideoHandler) setCommentHeaders(c *gin.Context) {
 	c.Header("Cache-Control", "public, max-age=300") // 5 minutes cache for comments
 	c.Header("Connection", "keep-alive")
+}
+
+// ===============================
+// 🚀 NEW: ENHANCED SEARCH ENDPOINTS
+// ===============================
+
+// Enhanced search endpoint with advanced filtering
+func (h *VideoHandler) AdvancedSearchVideos(c *gin.Context) {
+	h.setVideoListHeaders(c)
+
+	query := c.Query("q")
+	if query == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Search query required",
+			"code":  "MISSING_SEARCH_QUERY",
+		})
+		return
+	}
+
+	// Parse search parameters
+	filters := models.SearchFilters{
+		UserID:    c.Query("userId"),
+		MediaType: c.DefaultQuery("mediaType", "all"),
+		TimeRange: c.DefaultQuery("timeRange", "all"),
+		SortBy:    c.DefaultQuery("sortBy", "relevance"),
+	}
+
+	// Parse tags filter
+	if tagsStr := c.Query("tags"); tagsStr != "" {
+		filters.Tags = strings.Split(tagsStr, ",")
+	}
+
+	// Parse numeric filters
+	if minLikesStr := c.Query("minLikes"); minLikesStr != "" {
+		if minLikes, err := strconv.Atoi(minLikesStr); err == nil && minLikes > 0 {
+			filters.MinLikes = minLikes
+		}
+	}
+
+	// Parse boolean filters
+	if hasPriceStr := c.Query("hasPrice"); hasPriceStr != "" {
+		if hasPrice, err := strconv.ParseBool(hasPriceStr); err == nil {
+			filters.HasPrice = &hasPrice
+		}
+	}
+
+	if isVerifiedStr := c.Query("isVerified"); isVerifiedStr != "" {
+		if isVerified, err := strconv.ParseBool(isVerifiedStr); err == nil {
+			filters.IsVerified = &isVerified
+		}
+	}
+
+	// Parse pagination
+	limit := 20
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 50 {
+			limit = parsed
+		}
+	}
+
+	offset := 0
+	if o := c.Query("offset"); o != "" {
+		if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+
+	// Parse search mode
+	mode := models.SearchModeCombined
+	if modeStr := c.Query("mode"); modeStr != "" {
+		switch modeStr {
+		case "exact":
+			mode = models.SearchModeExact
+		case "fuzzy":
+			mode = models.SearchModeFuzzy
+		case "fulltext":
+			mode = models.SearchModeFullText
+		case "combined":
+			mode = models.SearchModeCombined
+		}
+	}
+
+	// Perform search
+	searchResponse, err := h.service.AdvancedSearchVideos(c.Request.Context(), query, filters, mode, limit, offset)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Search failed",
+			"code":  "SEARCH_ERROR",
+		})
+		return
+	}
+
+	// Format response
+	videos := make([]models.VideoResponse, len(searchResponse.Results))
+	for i, result := range searchResponse.Results {
+		videos[i] = *result.Video
+		// Optionally include relevance score in response
+		if c.Query("includeRelevance") == "true" {
+			videos[i].UserRole = videos[i].UserRole + " (relevance: " + strconv.FormatFloat(result.Relevance, 'f', 2, 64) + ")"
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"videos":      videos,
+		"total":       searchResponse.Total,
+		"query":       searchResponse.Query,
+		"searchMode":  searchResponse.SearchMode,
+		"timeTaken":   searchResponse.TimeTaken,
+		"suggestions": searchResponse.Suggestions,
+		"page":        searchResponse.Page,
+		"hasMore":     searchResponse.HasMore,
+		"filters":     filters,
+		"cached_at":   time.Now().Unix(),
+		"ttl":         300, // 5 minutes cache for search results
+	})
+}
+
+// Get popular search terms for autocomplete
+func (h *VideoHandler) GetPopularSearchTerms(c *gin.Context) {
+	h.setVideoListHeaders(c)
+
+	limit := 10
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 50 {
+			limit = parsed
+		}
+	}
+
+	terms, err := h.service.GetPopularSearchTerms(c.Request.Context(), limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to get popular search terms",
+			"code":  "SEARCH_TERMS_ERROR",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"terms":     terms,
+		"total":     len(terms),
+		"limit":     limit,
+		"cached_at": time.Now().Unix(),
+		"ttl":       1800, // 30 minutes cache
+	})
+}
+
+// Quick search suggestions (for real-time search)
+func (h *VideoHandler) GetSearchSuggestions(c *gin.Context) {
+	h.setInteractionHeaders(c) // No cache for real-time suggestions
+
+	query := c.Query("q")
+	if query == "" || len(query) < 2 {
+		c.JSON(http.StatusOK, gin.H{
+			"suggestions": []string{},
+			"query":       query,
+		})
+		return
+	}
+
+	// Quick prefix search for suggestions
+	suggestions, err := h.service.GetSearchSuggestions(c.Request.Context(), query, 5)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to get search suggestions",
+			"code":  "SUGGESTIONS_ERROR",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"suggestions": suggestions,
+		"query":       query,
+		"total":       len(suggestions),
+	})
 }
 
 // ===============================
@@ -793,11 +967,6 @@ func (h *VideoHandler) isValidVideoURL(url string) bool {
 	return false
 }
 
-// ===============================
-// REMAINING METHODS (PRESERVED FROM ORIGINAL)
-// All existing functionality maintained with performance headers applied
-// ===============================
-
 func (h *VideoHandler) UpdateVideo(c *gin.Context) {
 	h.setInteractionHeaders(c)
 
@@ -1396,6 +1565,7 @@ func (h *VideoHandler) HealthCheck(c *gin.Context) {
 			"role_validation":   true,
 			"price_support":     true, // NEW
 			"verification":      true, // NEW
+			"search_support":    true, // NEW: Added search capabilities
 		},
 	})
 }
@@ -1681,6 +1851,7 @@ func (h *VideoHandler) GetVideoAnalytics(c *gin.Context) {
 		"performance":     "good",
 		"optimized":       true,
 		"roleValidation":  true,
+		"searchSupport":   true, // NEW: Indicates search is supported
 		"cached_at":       time.Now().Unix(),
 		"ttl":             1800,
 	})

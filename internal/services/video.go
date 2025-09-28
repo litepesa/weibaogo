@@ -1,5 +1,5 @@
 // ===============================
-// internal/services/video.go - UPDATED Video Service with Simple Price and IsVerified Support
+// internal/services/video.go - COMPLETE UPDATED Video Service with Search Support
 // ===============================
 
 package services
@@ -163,6 +163,369 @@ func (s *VideoService) CheckUserPostingPermission(ctx context.Context, userID st
 	}
 
 	return nil
+}
+
+// ===============================
+// 🆕 NEW: SEARCH METHODS
+// ===============================
+
+// AdvancedSearchVideos with multiple search strategies
+func (s *VideoService) AdvancedSearchVideos(ctx context.Context, query string, filters models.SearchFilters, mode models.SearchMode, limit, offset int) (*models.SearchResponse, error) {
+	startTime := time.Now()
+
+	// Sanitize and prepare query
+	cleanQuery := strings.TrimSpace(query)
+	if cleanQuery == "" {
+		return &models.SearchResponse{
+			Results:   []models.SearchResult{},
+			Total:     0,
+			Query:     query,
+			TimeTaken: time.Since(startTime).Milliseconds(),
+		}, nil
+	}
+
+	var results []models.SearchResult
+	var err error
+
+	switch mode {
+	case models.SearchModeExact:
+		results, err = s.searchExact(ctx, cleanQuery, filters, limit, offset)
+	case models.SearchModeFuzzy:
+		results, err = s.searchFuzzy(ctx, cleanQuery, filters, limit, offset)
+	case models.SearchModeFullText:
+		results, err = s.searchFullText(ctx, cleanQuery, filters, limit, offset)
+	case models.SearchModeCombined:
+		results, err = s.searchCombined(ctx, cleanQuery, filters, limit, offset)
+	default:
+		results, err = s.searchCombined(ctx, cleanQuery, filters, limit, offset)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Generate search suggestions for empty/low results
+	suggestions := []string{}
+	if len(results) < 3 {
+		suggestions = s.generateSearchSuggestions(cleanQuery)
+	}
+
+	return &models.SearchResponse{
+		Results:     results,
+		Total:       len(results),
+		Query:       query,
+		SearchMode:  mode,
+		TimeTaken:   time.Since(startTime).Milliseconds(),
+		Suggestions: suggestions,
+		Page:        (offset / limit) + 1,
+		HasMore:     len(results) == limit,
+	}, nil
+}
+
+// Exact phrase search (fastest, most precise)
+func (s *VideoService) searchExact(ctx context.Context, query string, filters models.SearchFilters, limit, offset int) ([]models.SearchResult, error) {
+	baseQuery := `
+		SELECT v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
+		       v.caption, v.price, v.likes_count, v.comments_count, v.views_count, v.shares_count,
+		       v.tags, v.is_active, v.is_featured, v.is_verified, v.is_multiple_images, v.image_urls,
+		       v.created_at, v.updated_at, u.role as user_role,
+		       CASE 
+		         WHEN LOWER(v.caption) LIKE LOWER($1) THEN 1.0
+		         WHEN LOWER(v.user_name) LIKE LOWER($1) THEN 0.8
+		         ELSE 0.5
+		       END as relevance,
+		       CASE 
+		         WHEN LOWER(v.caption) LIKE LOWER($1) THEN 'caption'
+		         WHEN LOWER(v.user_name) LIKE LOWER($1) THEN 'username'
+		         ELSE 'other'
+		       END as match_type
+		FROM videos v
+		JOIN users u ON v.user_id = u.uid
+		WHERE v.is_active = true AND u.is_active = true
+		  AND (LOWER(v.caption) LIKE LOWER($1) OR LOWER(v.user_name) LIKE LOWER($1))`
+
+	args := []interface{}{"%" + query + "%"}
+	finalQuery, args := s.applySearchFilters(baseQuery, filters, args)
+	finalQuery += fmt.Sprintf(" ORDER BY relevance DESC, v.created_at DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
+	args = append(args, limit, offset)
+
+	return s.executeSearchQuery(ctx, finalQuery, args)
+}
+
+// Fuzzy search with trigram similarity (handles typos)
+func (s *VideoService) searchFuzzy(ctx context.Context, query string, filters models.SearchFilters, limit, offset int) ([]models.SearchResult, error) {
+	baseQuery := `
+		SELECT v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
+		       v.caption, v.price, v.likes_count, v.comments_count, v.views_count, v.shares_count,
+		       v.tags, v.is_active, v.is_featured, v.is_verified, v.is_multiple_images, v.image_urls,
+		       v.created_at, v.updated_at, u.role as user_role,
+		       GREATEST(
+		         similarity(v.caption, $1),
+		         similarity(v.user_name, $1)
+		       ) as relevance,
+		       CASE 
+		         WHEN similarity(v.caption, $1) > similarity(v.user_name, $1) THEN 'caption'
+		         ELSE 'username'
+		       END as match_type
+		FROM videos v
+		JOIN users u ON v.user_id = u.uid
+		WHERE v.is_active = true AND u.is_active = true
+		  AND (v.caption % $1 OR v.user_name % $1)`
+
+	args := []interface{}{query}
+	finalQuery, args := s.applySearchFilters(baseQuery, filters, args)
+	finalQuery += fmt.Sprintf(" ORDER BY relevance DESC, v.created_at DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
+	args = append(args, limit, offset)
+
+	return s.executeSearchQuery(ctx, finalQuery, args)
+}
+
+// Full-text search with PostgreSQL's text search
+func (s *VideoService) searchFullText(ctx context.Context, query string, filters models.SearchFilters, limit, offset int) ([]models.SearchResult, error) {
+	baseQuery := `
+		SELECT v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
+		       v.caption, v.price, v.likes_count, v.comments_count, v.views_count, v.shares_count,
+		       v.tags, v.is_active, v.is_featured, v.is_verified, v.is_multiple_images, v.image_urls,
+		       v.created_at, v.updated_at, u.role as user_role,
+		       ts_rank(to_tsvector('english', v.caption || ' ' || v.user_name), plainto_tsquery('english', $1)) as relevance,
+		       'fulltext' as match_type
+		FROM videos v
+		JOIN users u ON v.user_id = u.uid
+		WHERE v.is_active = true AND u.is_active = true
+		  AND to_tsvector('english', v.caption || ' ' || v.user_name) @@ plainto_tsquery('english', $1)`
+
+	args := []interface{}{query}
+	finalQuery, args := s.applySearchFilters(baseQuery, filters, args)
+	finalQuery += fmt.Sprintf(" ORDER BY relevance DESC, v.created_at DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
+	args = append(args, limit, offset)
+
+	return s.executeSearchQuery(ctx, finalQuery, args)
+}
+
+// Combined search using multiple strategies
+func (s *VideoService) searchCombined(ctx context.Context, query string, filters models.SearchFilters, limit, offset int) ([]models.SearchResult, error) {
+	// Try exact search first (fastest)
+	exactResults, err := s.searchExact(ctx, query, filters, limit/2, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	// If we have enough exact results, return them
+	if len(exactResults) >= limit {
+		return exactResults[:limit], nil
+	}
+
+	// Otherwise, combine with fuzzy search
+	fuzzyResults, err := s.searchFuzzy(ctx, query, filters, limit-len(exactResults), 0)
+	if err != nil {
+		return nil, err
+	}
+
+	// Merge and deduplicate results
+	combinedResults := s.mergeSearchResults(exactResults, fuzzyResults, limit)
+	return combinedResults, nil
+}
+
+// Apply search filters to query
+func (s *VideoService) applySearchFilters(baseQuery string, filters models.SearchFilters, args []interface{}) (string, []interface{}) {
+	argIndex := len(args) + 1
+
+	if filters.UserID != "" {
+		baseQuery += fmt.Sprintf(" AND v.user_id = $%d", argIndex)
+		args = append(args, filters.UserID)
+		argIndex++
+	}
+
+	if filters.MediaType != "" && filters.MediaType != "all" {
+		if filters.MediaType == "image" {
+			baseQuery += " AND v.is_multiple_images = true"
+		} else if filters.MediaType == "video" {
+			baseQuery += " AND v.is_multiple_images = false"
+		}
+	}
+
+	if filters.TimeRange != "" && filters.TimeRange != "all" {
+		var timeFilter string
+		switch filters.TimeRange {
+		case "day":
+			timeFilter = "v.created_at >= NOW() - INTERVAL '1 day'"
+		case "week":
+			timeFilter = "v.created_at >= NOW() - INTERVAL '1 week'"
+		case "month":
+			timeFilter = "v.created_at >= NOW() - INTERVAL '1 month'"
+		}
+		if timeFilter != "" {
+			baseQuery += " AND " + timeFilter
+		}
+	}
+
+	if filters.MinLikes > 0 {
+		baseQuery += fmt.Sprintf(" AND v.likes_count >= $%d", argIndex)
+		args = append(args, filters.MinLikes)
+		argIndex++
+	}
+
+	if filters.HasPrice != nil {
+		if *filters.HasPrice {
+			baseQuery += " AND v.price > 0"
+		} else {
+			baseQuery += " AND v.price = 0"
+		}
+	}
+
+	if filters.IsVerified != nil {
+		baseQuery += fmt.Sprintf(" AND v.is_verified = $%d", argIndex)
+		args = append(args, *filters.IsVerified)
+		argIndex++
+	}
+
+	return baseQuery, args
+}
+
+// Execute search query and return formatted results
+func (s *VideoService) executeSearchQuery(ctx context.Context, query string, args []interface{}) ([]models.SearchResult, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []models.SearchResult
+	for rows.Next() {
+		var video models.VideoResponse
+		var userRole models.UserRole
+		var relevance float64
+		var matchType string
+
+		err := rows.Scan(
+			&video.ID, &video.UserID, &video.UserName, &video.UserImage,
+			&video.VideoURL, &video.ThumbnailURL, &video.Caption, &video.Price,
+			&video.LikesCount, &video.CommentsCount, &video.ViewsCount, &video.SharesCount,
+			&video.Tags, &video.IsActive, &video.IsFeatured, &video.IsVerified,
+			&video.IsMultipleImages, &video.ImageUrls, &video.CreatedAt, &video.UpdatedAt,
+			&userRole, &relevance, &matchType,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		// Apply URL optimizations
+		s.applyURLOptimizations(&video)
+		video.UserProfileImage = video.UserImage
+		video.UserRole = userRole.String()
+		video.UserCanPost = userRole.CanPost()
+
+		results = append(results, models.SearchResult{
+			Video:     &video,
+			Relevance: relevance,
+			MatchType: matchType,
+		})
+	}
+
+	return results, nil
+}
+
+// Merge and deduplicate search results
+func (s *VideoService) mergeSearchResults(results1, results2 []models.SearchResult, limit int) []models.SearchResult {
+	seen := make(map[string]bool)
+	var merged []models.SearchResult
+
+	// Add results from first set
+	for _, result := range results1 {
+		if !seen[result.Video.ID] && len(merged) < limit {
+			seen[result.Video.ID] = true
+			merged = append(merged, result)
+		}
+	}
+
+	// Add results from second set
+	for _, result := range results2 {
+		if !seen[result.Video.ID] && len(merged) < limit {
+			seen[result.Video.ID] = true
+			merged = append(merged, result)
+		}
+	}
+
+	return merged
+}
+
+// Generate search suggestions for better UX
+func (s *VideoService) generateSearchSuggestions(query string) []string {
+	suggestions := []string{}
+
+	if len(query) > 2 {
+		// Generate some basic suggestions
+		suggestions = append(suggestions, query+" tutorial")
+		suggestions = append(suggestions, query+" tips")
+		suggestions = append(suggestions, "how to "+query)
+	}
+
+	return suggestions
+}
+
+// GetPopularSearchTerms for autocomplete
+func (s *VideoService) GetPopularSearchTerms(ctx context.Context, limit int) ([]string, error) {
+	query := `
+		SELECT term 
+		FROM popular_search_terms 
+		ORDER BY frequency DESC 
+		LIMIT $1`
+
+	rows, err := s.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var terms []string
+	for rows.Next() {
+		var term string
+		if err := rows.Scan(&term); err != nil {
+			continue
+		}
+		terms = append(terms, term)
+	}
+
+	return terms, nil
+}
+
+// GetSearchSuggestions for real-time autocomplete
+func (s *VideoService) GetSearchSuggestions(ctx context.Context, query string, limit int) ([]string, error) {
+	// Quick prefix search on captions and usernames
+	sqlQuery := `
+		SELECT DISTINCT 
+		  CASE 
+		    WHEN LOWER(caption) LIKE LOWER($1) THEN caption
+		    WHEN LOWER(user_name) LIKE LOWER($1) THEN user_name
+		  END as suggestion
+		FROM videos 
+		WHERE is_active = true 
+		  AND (LOWER(caption) LIKE LOWER($1) OR LOWER(user_name) LIKE LOWER($1))
+		  AND LENGTH(CASE 
+		    WHEN LOWER(caption) LIKE LOWER($1) THEN caption
+		    WHEN LOWER(user_name) LIKE LOWER($1) THEN user_name
+		  END) > 0
+		ORDER BY suggestion
+		LIMIT $2`
+
+	rows, err := s.db.QueryContext(ctx, sqlQuery, query+"%", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var suggestions []string
+	for rows.Next() {
+		var suggestion string
+		if err := rows.Scan(&suggestion); err != nil {
+			continue
+		}
+		if suggestion != "" {
+			suggestions = append(suggestions, suggestion)
+		}
+	}
+
+	return suggestions, nil
 }
 
 // ===============================
