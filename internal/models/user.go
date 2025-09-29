@@ -1,5 +1,5 @@
 // ===============================
-// internal/models/user.go - UPDATED User Model with Role and WhatsApp
+// internal/models/user.go - UPDATED User Model with Gender, Location, and Language
 // ===============================
 
 package models
@@ -38,7 +38,7 @@ func (r UserRole) IsValid() bool {
 
 // CanPost returns true if the user role can post videos
 func (r UserRole) CanPost() bool {
-	return r == UserRoleAdmin || r == UserRoleHost
+	return r == UserRoleAdmin || r == UserRoleHost || r == UserRoleGuest
 }
 
 // DisplayName returns the display name for the role
@@ -66,6 +66,53 @@ func ParseUserRole(s string) UserRole {
 		return UserRoleGuest
 	default:
 		return UserRoleGuest
+	}
+}
+
+// UserGender represents the user gender enum
+type UserGender string
+
+const (
+	UserGenderMale   UserGender = "male"
+	UserGenderFemale UserGender = "female"
+)
+
+// String returns the string representation of UserGender
+func (g UserGender) String() string {
+	return string(g)
+}
+
+// IsValid checks if the user gender is valid
+func (g UserGender) IsValid() bool {
+	return g == UserGenderMale || g == UserGenderFemale
+}
+
+// DisplayName returns the display name for the gender
+func (g UserGender) DisplayName() string {
+	switch g {
+	case UserGenderMale:
+		return "Male"
+	case UserGenderFemale:
+		return "Female"
+	default:
+		return ""
+	}
+}
+
+// ParseUserGender parses a string to UserGender
+func ParseUserGender(s string) *UserGender {
+	if s == "" {
+		return nil
+	}
+	switch strings.ToLower(s) {
+	case "male":
+		gender := UserGenderMale
+		return &gender
+	case "female":
+		gender := UserGenderFemale
+		return &gender
+	default:
+		return nil
 	}
 }
 
@@ -99,12 +146,15 @@ type User struct {
 	UID            string      `json:"uid" db:"uid"`
 	Name           string      `json:"name" db:"name" binding:"required"`
 	PhoneNumber    string      `json:"phoneNumber" db:"phone_number" binding:"required"`
-	WhatsappNumber *string     `json:"whatsappNumber" db:"whatsapp_number"` // NEW: Optional WhatsApp number
+	WhatsappNumber *string     `json:"whatsappNumber" db:"whatsapp_number"`
 	ProfileImage   string      `json:"profileImage" db:"profile_image"`
 	CoverImage     string      `json:"coverImage" db:"cover_image"`
 	Bio            string      `json:"bio" db:"bio"`
 	UserType       string      `json:"userType" db:"user_type"` // Keep for backward compatibility
-	Role           UserRole    `json:"role" db:"role"`          // NEW: User role (admin, host, guest)
+	Role           UserRole    `json:"role" db:"role"`
+	Gender         *string     `json:"gender" db:"gender"`     // NEW: User gender (male/female)
+	Location       *string     `json:"location" db:"location"` // NEW: User location (e.g., "Nairobi, Kenya")
+	Language       *string     `json:"language" db:"language"` // NEW: User native language (e.g., "English", "Swahili")
 	FollowersCount int         `json:"followersCount" db:"followers_count"`
 	FollowingCount int         `json:"followingCount" db:"following_count"`
 	VideosCount    int         `json:"videosCount" db:"videos_count"`
@@ -163,7 +213,7 @@ func (p *UserPreferences) Scan(value interface{}) error {
 
 // Helper methods
 func (u *User) IsAdmin() bool {
-	return u.Role == UserRoleAdmin || u.UserType == "admin" // Check both for compatibility
+	return u.Role == UserRoleAdmin || u.UserType == "admin"
 }
 
 func (u *User) IsHost() bool {
@@ -186,12 +236,79 @@ func (u *User) CanManageUsers() bool {
 	return u.IsAdmin()
 }
 
-// NEW: Check if user can post videos based on role
 func (u *User) CanPost() bool {
 	return u.Role.CanPost()
 }
 
-// NEW: WhatsApp helper methods
+// NEW: Gender helper methods
+func (u *User) HasGender() bool {
+	return u.Gender != nil && *u.Gender != ""
+}
+
+func (u *User) GetGender() *UserGender {
+	if !u.HasGender() {
+		return nil
+	}
+	return ParseUserGender(*u.Gender)
+}
+
+func (u *User) GetGenderDisplay() string {
+	gender := u.GetGender()
+	if gender == nil {
+		return "Not specified"
+	}
+	return gender.DisplayName()
+}
+
+func (u *User) IsMale() bool {
+	gender := u.GetGender()
+	return gender != nil && *gender == UserGenderMale
+}
+
+func (u *User) IsFemale() bool {
+	gender := u.GetGender()
+	return gender != nil && *gender == UserGenderFemale
+}
+
+// NEW: Location helper methods
+func (u *User) HasLocation() bool {
+	return u.Location != nil && *u.Location != ""
+}
+
+func (u *User) GetLocation() string {
+	if !u.HasLocation() {
+		return ""
+	}
+	return *u.Location
+}
+
+func (u *User) GetLocationDisplay() string {
+	if !u.HasLocation() {
+		return "Location not set"
+	}
+	return *u.Location
+}
+
+// NEW: Language helper methods
+func (u *User) HasLanguage() bool {
+	return u.Language != nil && *u.Language != ""
+}
+
+func (u *User) GetLanguage() string {
+	if !u.HasLanguage() {
+		return ""
+	}
+	return *u.Language
+}
+
+func (u *User) GetLanguageDisplay() string {
+	if !u.HasLanguage() {
+		return "Language not set"
+	}
+	return *u.Language
+}
+
+// WhatsApp helper methods
 func (u *User) HasWhatsApp() bool {
 	return u.WhatsappNumber != nil && *u.WhatsappNumber != ""
 }
@@ -209,20 +326,17 @@ func (u *User) GetWhatsAppLinkWithMessage() *string {
 		return nil
 	}
 	message := fmt.Sprintf("Hi %s! I found your profile on the app.", u.Name)
-	// URL encode the message (simplified)
 	encodedMessage := strings.ReplaceAll(message, " ", "%20")
 	encodedMessage = strings.ReplaceAll(encodedMessage, "!", "%21")
 	link := fmt.Sprintf("https://wa.me/%s?text=%s", *u.WhatsappNumber, encodedMessage)
 	return &link
 }
 
-// NEW: Validate WhatsApp number format (Kenyan format: 254XXXXXXXXX)
 func (u *User) ValidateWhatsAppNumber() error {
 	if u.WhatsappNumber == nil || *u.WhatsappNumber == "" {
-		return nil // Optional field
+		return nil
 	}
 
-	// Check format: 254 followed by 9 digits
 	matched, err := regexp.MatchString(`^254[0-9]{9}$`, *u.WhatsappNumber)
 	if err != nil {
 		return fmt.Errorf("error validating WhatsApp number: %w", err)
@@ -234,27 +348,21 @@ func (u *User) ValidateWhatsAppNumber() error {
 	return nil
 }
 
-// Helper function to format WhatsApp number from various inputs
 func FormatWhatsAppNumber(input string) (*string, error) {
 	if input == "" {
 		return nil, nil
 	}
 
-	// Remove any non-digit characters
 	re := regexp.MustCompile(`\D`)
 	cleaned := re.ReplaceAllString(input, "")
 
-	// Handle different input formats
 	switch {
 	case len(cleaned) == 12 && cleaned[:3] == "254":
-		// Already in correct format: 254XXXXXXXXX
 		return &cleaned, nil
 	case len(cleaned) == 10 && cleaned[0] == '0':
-		// Format: 0XXXXXXXXX -> convert to 254XXXXXXXXX
 		formatted := "254" + cleaned[1:]
 		return &formatted, nil
 	case len(cleaned) == 9:
-		// Format: XXXXXXXXX -> convert to 254XXXXXXXXX
 		formatted := "254" + cleaned
 		return &formatted, nil
 	default:
@@ -262,12 +370,10 @@ func FormatWhatsAppNumber(input string) (*string, error) {
 	}
 }
 
-// Check if user can create dramas (verified users only)
 func (u *User) CanCreateDramas() bool {
 	return u.IsVerified && u.IsActive
 }
 
-// Check if user has unlocked a specific drama
 func (u *User) HasUnlockedDrama(dramaID string) bool {
 	for _, id := range u.UnlockedDramas {
 		if id == dramaID {
@@ -277,7 +383,6 @@ func (u *User) HasUnlockedDrama(dramaID string) bool {
 	return false
 }
 
-// Check if user has favorited a specific drama
 func (u *User) HasFavoritedDrama(dramaID string) bool {
 	for _, id := range u.FavoriteDramas {
 		if id == dramaID {
@@ -287,7 +392,6 @@ func (u *User) HasFavoritedDrama(dramaID string) bool {
 	return false
 }
 
-// Get drama progress for a specific drama
 func (u *User) GetDramaProgress(dramaID string) int {
 	if u.DramaProgress == nil {
 		return 0
@@ -295,7 +399,6 @@ func (u *User) GetDramaProgress(dramaID string) int {
 	return u.DramaProgress[dramaID]
 }
 
-// LastPostAt helper methods
 func (u *User) HasPostedVideos() bool {
 	return u.LastPostAt != nil
 }
@@ -320,19 +423,19 @@ func (u *User) GetLastPostTimeAgo() string {
 	now := time.Now()
 	difference := now.Sub(*u.LastPostAt)
 
-	if difference.Hours() > 8760 { // More than 1 year
+	if difference.Hours() > 8760 {
 		years := int(difference.Hours() / 8760)
 		return fmt.Sprintf("%dy ago", years)
-	} else if difference.Hours() > 720 { // More than 1 month
+	} else if difference.Hours() > 720 {
 		months := int(difference.Hours() / 720)
 		return fmt.Sprintf("%dmo ago", months)
-	} else if difference.Hours() > 24 { // More than 1 day
+	} else if difference.Hours() > 24 {
 		days := int(difference.Hours() / 24)
 		return fmt.Sprintf("%dd ago", days)
-	} else if difference.Hours() > 1 { // More than 1 hour
+	} else if difference.Hours() > 1 {
 		hours := int(difference.Hours())
 		return fmt.Sprintf("%dh ago", hours)
-	} else if difference.Minutes() > 1 { // More than 1 minute
+	} else if difference.Minutes() > 1 {
 		minutes := int(difference.Minutes())
 		return fmt.Sprintf("%dm ago", minutes)
 	} else {
@@ -348,7 +451,6 @@ func (u *User) GetEngagementRate() float64 {
 	if u.FollowersCount == 0 {
 		return 0.0
 	}
-	// Simple engagement calculation based on videos and followers
 	return (float64(u.VideosCount) / float64(u.FollowersCount)) * 100
 }
 
@@ -363,7 +465,6 @@ func (u *User) GetProfileImageOrDefault() string {
 	if u.ProfileImage != "" {
 		return u.ProfileImage
 	}
-	// Return a default avatar URL or placeholder
 	return "/assets/default-avatar.png"
 }
 
@@ -408,6 +509,24 @@ func (u *User) ValidateForCreation() []string {
 		errors = append(errors, err.Error())
 	}
 
+	// NEW: Validate gender
+	if u.Gender != nil && *u.Gender != "" {
+		gender := ParseUserGender(*u.Gender)
+		if gender == nil {
+			errors = append(errors, "Gender must be either 'male' or 'female'")
+		}
+	}
+
+	// NEW: Validate location length
+	if u.Location != nil && len(*u.Location) > 255 {
+		errors = append(errors, "Location cannot exceed 255 characters")
+	}
+
+	// NEW: Validate language length
+	if u.Language != nil && len(*u.Language) > 100 {
+		errors = append(errors, "Language cannot exceed 100 characters")
+	}
+
 	return errors
 }
 
@@ -429,10 +548,13 @@ func isValidUserType(userType string) bool {
 type CreateUserRequest struct {
 	Name           string  `json:"name" binding:"required"`
 	PhoneNumber    string  `json:"phoneNumber" binding:"required"`
-	WhatsappNumber *string `json:"whatsappNumber"` // NEW: Optional WhatsApp number
+	WhatsappNumber *string `json:"whatsappNumber"`
 	ProfileImage   string  `json:"profileImage"`
 	Bio            string  `json:"bio"`
-	Role           *string `json:"role"` // NEW: Optional role (defaults to guest)
+	Role           *string `json:"role"`
+	Gender         *string `json:"gender"`   // NEW: Optional gender
+	Location       *string `json:"location"` // NEW: Optional location
+	Language       *string `json:"language"` // NEW: Optional language
 }
 
 type UpdateUserRequest struct {
@@ -441,28 +563,35 @@ type UpdateUserRequest struct {
 	CoverImage     string   `json:"coverImage"`
 	Bio            string   `json:"bio"`
 	Tags           []string `json:"tags"`
-	WhatsappNumber *string  `json:"whatsappNumber"` // NEW: Optional WhatsApp number
+	WhatsappNumber *string  `json:"whatsappNumber"`
+	Gender         *string  `json:"gender"`   // NEW: Optional gender
+	Location       *string  `json:"location"` // NEW: Optional location
+	Language       *string  `json:"language"` // NEW: Optional language
 }
 
 // User response models
 type UserResponse struct {
 	User
-	MutualFollowersCount int     `json:"mutualFollowersCount"`
-	RecentVideos         []Video `json:"recentVideos,omitempty"`
-	// NEW: Role-related response fields
-	RoleDisplayName string `json:"roleDisplayName"`
-	CanPost         bool   `json:"canPost"`
-	// NEW: WhatsApp-related response fields
+	MutualFollowersCount    int     `json:"mutualFollowersCount"`
+	RecentVideos            []Video `json:"recentVideos,omitempty"`
+	RoleDisplayName         string  `json:"roleDisplayName"`
+	CanPost                 bool    `json:"canPost"`
 	HasWhatsApp             bool    `json:"hasWhatsApp"`
 	WhatsAppLink            *string `json:"whatsAppLink,omitempty"`
 	WhatsAppLinkWithMessage *string `json:"whatsAppLinkWithMessage,omitempty"`
-	// Drama-related response fields
-	CreatedDramasCount  int `json:"createdDramasCount,omitempty"`
-	FavoriteDramasCount int `json:"favoriteDramasCount"`
-	UnlockedDramasCount int `json:"unlockedDramasCount"`
-	// Last post related fields
-	HasPostedVideos bool   `json:"hasPostedVideos"`
-	LastPostTimeAgo string `json:"lastPostTimeAgo"`
+	// NEW: Profile fields
+	GenderDisplay   string `json:"genderDisplay"`
+	LocationDisplay string `json:"locationDisplay"`
+	LanguageDisplay string `json:"languageDisplay"`
+	HasGender       bool   `json:"hasGender"`
+	HasLocation     bool   `json:"hasLocation"`
+	HasLanguage     bool   `json:"hasLanguage"`
+	// Drama-related
+	CreatedDramasCount  int    `json:"createdDramasCount,omitempty"`
+	FavoriteDramasCount int    `json:"favoriteDramasCount"`
+	UnlockedDramasCount int    `json:"unlockedDramasCount"`
+	HasPostedVideos     bool   `json:"hasPostedVideos"`
+	LastPostTimeAgo     string `json:"lastPostTimeAgo"`
 }
 
 type UserListResponse struct {
@@ -471,7 +600,6 @@ type UserListResponse struct {
 	Total   int            `json:"total"`
 }
 
-// Social interaction models
 type FollowRequest struct {
 	TargetUserID string `json:"targetUserId" binding:"required"`
 }
@@ -479,14 +607,16 @@ type FollowRequest struct {
 type UserSearchParams struct {
 	Query    string    `json:"query"`
 	UserType string    `json:"userType"`
-	Role     *UserRole `json:"role"` // NEW: Filter by role
+	Role     *UserRole `json:"role"`
+	Gender   *string   `json:"gender"`   // NEW: Filter by gender
+	Location *string   `json:"location"` // NEW: Filter by location
+	Language *string   `json:"language"` // NEW: Filter by language
 	Verified *bool     `json:"verified"`
 	Featured *bool     `json:"featured"`
 	Limit    int       `json:"limit"`
 	Offset   int       `json:"offset"`
 }
 
-// User statistics
 type UserStats struct {
 	UserID         string  `json:"userId"`
 	Username       string  `json:"username"`
@@ -497,21 +627,23 @@ type UserStats struct {
 	TotalViews     int     `json:"totalViews"`
 	EngagementRate float64 `json:"engagementRate"`
 
-	// NEW: Role-related stats
 	Role            UserRole `json:"role"`
 	RoleDisplayName string   `json:"roleDisplayName"`
 	CanPost         bool     `json:"canPost"`
 
-	// NEW: WhatsApp-related stats
 	HasWhatsApp bool `json:"hasWhatsApp"`
 
-	// Drama-related stats
+	// NEW: Profile stats
+	Gender        *string `json:"gender,omitempty"`
+	GenderDisplay string  `json:"genderDisplay"`
+	Location      *string `json:"location,omitempty"`
+	Language      *string `json:"language,omitempty"`
+
 	CreatedDramasCount  int `json:"createdDramasCount"`
-	DramaRevenue        int `json:"dramaRevenue,omitempty"` // Only for verified users
+	DramaRevenue        int `json:"dramaRevenue,omitempty"`
 	FavoriteDramasCount int `json:"favoriteDramasCount"`
 	UnlockedDramasCount int `json:"unlockedDramasCount"`
 
-	// Last post related stats
 	HasPostedVideos bool       `json:"hasPostedVideos"`
 	LastPostAt      *time.Time `json:"lastPostAt"`
 	LastPostTimeAgo string     `json:"lastPostTimeAgo"`
@@ -520,27 +652,26 @@ type UserStats struct {
 	LastActiveAt time.Time `json:"lastActiveAt"`
 }
 
-// Activity tracking
 type UserActivity struct {
 	UserID       string    `json:"userId"`
-	ActivityType string    `json:"activityType"` // "video_posted", "drama_created", "drama_unlocked", etc.
-	TargetID     string    `json:"targetId"`     // Video ID, Drama ID, Comment ID, etc.
-	TargetType   string    `json:"targetType"`   // "video", "drama", "comment", "user"
+	ActivityType string    `json:"activityType"`
+	TargetID     string    `json:"targetId"`
+	TargetType   string    `json:"targetType"`
 	CreatedAt    time.Time `json:"createdAt"`
 }
 
-// Constants for user limits
 const (
 	MaxNameLength       = 50
 	MaxBioLength        = 160
 	MaxTagsPerUser      = 10
-	MaxFollowingLimit   = 7500 // TikTok-style following limit
+	MaxFollowingLimit   = 7500
 	MinUsernameLength   = 2
-	MaxProfileImageSize = 10 * 1024 * 1024 // 10MB
-	MaxCoverImageSize   = 15 * 1024 * 1024 // 15MB
+	MaxProfileImageSize = 10 * 1024 * 1024
+	MaxCoverImageSize   = 15 * 1024 * 1024
+	MaxLocationLength   = 255 // NEW
+	MaxLanguageLength   = 100 // NEW
 )
 
-// User types (keep for backward compatibility)
 const (
 	UserTypeUser      = "user"
 	UserTypeAdmin     = "admin"

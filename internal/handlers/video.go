@@ -849,7 +849,7 @@ func (h *VideoHandler) CreateVideo(c *gin.Context) {
 			"error":        "Video creation not allowed",
 			"code":         "ROLE_PERMISSION_DENIED",
 			"details":      err.Error(),
-			"allowedRoles": []string{"admin", "host"},
+			"allowedRoles": []string{"admin", "host", "guest"},
 		})
 		return
 	}
@@ -890,7 +890,7 @@ func (h *VideoHandler) CreateVideo(c *gin.Context) {
 			"error":        "User role cannot post videos",
 			"code":         "ROLE_PERMISSION_DENIED",
 			"userRole":     userRole.String(),
-			"allowedRoles": []string{"admin", "host"},
+			"allowedRoles": []string{"admin", "host", "guest"},
 		})
 		return
 	}

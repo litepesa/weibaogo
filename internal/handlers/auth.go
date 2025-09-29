@@ -158,7 +158,7 @@ func (h *AuthHandler) RequireContentCreator(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{
 			"error":        "Content creation access required",
 			"userRole":     role.String(),
-			"allowedRoles": []string{"admin", "host"},
+			"allowedRoles": []string{"admin", "host", "guest"},
 		})
 		c.Abort()
 		return

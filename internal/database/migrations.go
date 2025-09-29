@@ -906,6 +906,181 @@ func RunMigrations(db *sqlx.DB) error {
 		$func_refresh$ LANGUAGE plpgsql;
 	`,
 		},
+
+		{
+			Version: "012_add_user_profile_fields",
+			Query: `
+		-- ===============================
+		-- ADD GENDER, LOCATION, AND LANGUAGE FIELDS TO USERS
+		-- ===============================
+		
+		-- Add gender column (male or female)
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS gender VARCHAR(10);
+
+		-- Add location column (free text, e.g., "Nairobi, Kenya")
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS location VARCHAR(255);
+
+		-- Drop language column if it exists (to recreate fresh)
+		DO $$
+		BEGIN
+			-- Drop old format check constraint
+			IF EXISTS (
+				SELECT 1 FROM information_schema.table_constraints 
+				WHERE constraint_name = 'users_language_format_check' 
+				AND table_name = 'users'
+			) THEN
+				ALTER TABLE users DROP CONSTRAINT users_language_format_check;
+			END IF;
+			
+			-- Drop length check constraint
+			IF EXISTS (
+				SELECT 1 FROM information_schema.table_constraints 
+				WHERE constraint_name = 'users_language_length_check' 
+				AND table_name = 'users'
+			) THEN
+				ALTER TABLE users DROP CONSTRAINT users_language_length_check;
+			END IF;
+		END $$;
+
+		-- Drop the index for language
+		DROP INDEX IF EXISTS idx_users_language;
+
+		-- Drop the language column completely if it exists
+		ALTER TABLE users DROP COLUMN IF EXISTS language;
+
+		-- Create language column fresh - VARCHAR(100), NULL by default
+		ALTER TABLE users ADD COLUMN language VARCHAR(100);
+
+		-- Add check constraint for gender values
+		DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM information_schema.table_constraints 
+				WHERE constraint_name = 'users_gender_check' 
+				AND table_name = 'users'
+			) THEN
+				ALTER TABLE users ADD CONSTRAINT users_gender_check
+				CHECK (gender IS NULL OR gender IN ('male', 'female'));
+			END IF;
+		END $$;
+
+		-- Add check constraint for location length
+		DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM information_schema.table_constraints 
+				WHERE constraint_name = 'users_location_length_check' 
+				AND table_name = 'users'
+			) THEN
+				ALTER TABLE users ADD CONSTRAINT users_location_length_check
+				CHECK (location IS NULL OR LENGTH(location) <= 255);
+			END IF;
+		END $$;
+
+		-- Add check constraint for language length
+		DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM information_schema.table_constraints 
+				WHERE constraint_name = 'users_language_length_check' 
+				AND table_name = 'users'
+			) THEN
+				ALTER TABLE users ADD CONSTRAINT users_language_length_check
+				CHECK (language IS NULL OR LENGTH(language) <= 100);
+			END IF;
+		END $$;
+
+		-- Create indexes for filtering and search performance
+		CREATE INDEX IF NOT EXISTS idx_users_gender 
+		ON users(gender) 
+		WHERE gender IS NOT NULL;
+
+		CREATE INDEX IF NOT EXISTS idx_users_location 
+		ON users(location) 
+		WHERE location IS NOT NULL;
+
+		CREATE INDEX IF NOT EXISTS idx_users_language 
+		ON users(language) 
+		WHERE language IS NOT NULL;
+
+		-- Create composite index for location-based searches
+		CREATE INDEX IF NOT EXISTS idx_users_location_active 
+		ON users(location, is_active) 
+		WHERE location IS NOT NULL AND is_active = true;
+
+		-- Create function to validate gender value
+		CREATE OR REPLACE FUNCTION is_valid_gender(gender_value VARCHAR)
+		RETURNS BOOLEAN AS $$
+		BEGIN
+			RETURN gender_value IS NULL OR gender_value IN ('male', 'female');
+		END;
+		$$ LANGUAGE plpgsql;
+
+		-- Drop existing demographics function if it exists
+		DROP FUNCTION IF EXISTS get_user_demographics_summary();
+
+		-- Create function to get user demographics summary
+		CREATE OR REPLACE FUNCTION get_user_demographics_summary()
+		RETURNS TABLE(
+			total_users BIGINT,
+			male_count BIGINT,
+			female_count BIGINT,
+			unspecified_gender_count BIGINT,
+			top_locations TEXT[],
+			top_languages TEXT[]
+		) AS $$
+		BEGIN
+			RETURN QUERY
+			WITH gender_stats AS (
+				SELECT 
+					COUNT(*) as total,
+					COUNT(*) FILTER (WHERE gender = 'male') as male,
+					COUNT(*) FILTER (WHERE gender = 'female') as female,
+					COUNT(*) FILTER (WHERE gender IS NULL) as unspecified
+				FROM users
+				WHERE is_active = true
+			),
+			location_stats AS (
+				SELECT COALESCE(ARRAY_AGG(location ORDER BY count DESC), ARRAY[]::TEXT[]) as locations
+				FROM (
+					SELECT location, COUNT(*) as count
+					FROM users
+					WHERE is_active = true AND location IS NOT NULL
+					GROUP BY location
+					ORDER BY count DESC
+					LIMIT 10
+				) l
+			),
+			language_stats AS (
+				SELECT COALESCE(ARRAY_AGG(language ORDER BY count DESC), ARRAY[]::TEXT[]) as languages
+				FROM (
+					SELECT language, COUNT(*) as count
+					FROM users
+					WHERE is_active = true AND language IS NOT NULL
+					GROUP BY language
+					ORDER BY count DESC
+					LIMIT 10
+				) lang
+			)
+			SELECT 
+				g.total,
+				g.male,
+				g.female,
+				g.unspecified,
+				l.locations,
+				lang.languages
+			FROM gender_stats g
+			CROSS JOIN location_stats l
+			CROSS JOIN language_stats lang;
+		END;
+		$$ LANGUAGE plpgsql;
+
+		-- Add column comments for documentation
+		COMMENT ON COLUMN users.gender IS 'User gender: male or female (optional)';
+		COMMENT ON COLUMN users.location IS 'User location in free text format, e.g., "Nairobi, Kenya" (optional)';
+		COMMENT ON COLUMN users.language IS 'User native/spoken language in free text format, e.g., "English", "Swahili", "French" (optional)';
+	`,
+		},
 	}
 
 	for _, migration := range migrations {
