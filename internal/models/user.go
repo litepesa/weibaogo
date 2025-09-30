@@ -38,7 +38,7 @@ func (r UserRole) IsValid() bool {
 
 // CanPost returns true if the user role can post videos
 func (r UserRole) CanPost() bool {
-	return r == UserRoleAdmin || r == UserRoleHost || r == UserRoleGuest
+	return r == UserRoleAdmin || r == UserRoleHost
 }
 
 // DisplayName returns the display name for the role

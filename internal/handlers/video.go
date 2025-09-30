@@ -1,5 +1,5 @@
 // ===============================
-// internal/handlers/video.go - COMPLETE UPDATED Video Handler with Search Support
+// internal/handlers/video.go - SIMPLIFIED with Fuzzy Search + History
 // ===============================
 
 package handlers
@@ -29,44 +29,43 @@ func NewVideoHandler(service *services.VideoService, userService *services.UserS
 }
 
 // ===============================
-// HTTP HEADERS FOR VIDEO STREAMING PERFORMANCE
+// HEADER HELPERS
 // ===============================
 
 func (h *VideoHandler) setVideoStreamingHeaders(c *gin.Context) {
 	c.Header("Accept-Ranges", "bytes")
-	c.Header("Cache-Control", "public, max-age=3600") // 1 hour cache for video content
+	c.Header("Cache-Control", "public, max-age=3600")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Header("X-Frame-Options", "SAMEORIGIN")
 }
 
 func (h *VideoHandler) setVideoAPIHeaders(c *gin.Context) {
-	c.Header("Cache-Control", "public, max-age=1800") // 30 minutes cache for video metadata
+	c.Header("Cache-Control", "public, max-age=1800")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Content-Type-Options", "nosniff")
 }
 
 func (h *VideoHandler) setVideoListHeaders(c *gin.Context) {
-	c.Header("Cache-Control", "public, max-age=900") // 15 minutes cache for video lists
+	c.Header("Cache-Control", "public, max-age=900")
 	c.Header("Connection", "keep-alive")
 }
 
 func (h *VideoHandler) setInteractionHeaders(c *gin.Context) {
-	c.Header("Cache-Control", "no-cache") // No cache for interactions (real-time data)
+	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 }
 
 func (h *VideoHandler) setCommentHeaders(c *gin.Context) {
-	c.Header("Cache-Control", "public, max-age=300") // 5 minutes cache for comments
+	c.Header("Cache-Control", "public, max-age=300")
 	c.Header("Connection", "keep-alive")
 }
 
 // ===============================
-// 🚀 NEW: ENHANCED SEARCH ENDPOINTS
+// 🔍 SIMPLIFIED SEARCH ENDPOINT
 // ===============================
 
-// Enhanced search endpoint with advanced filtering
-func (h *VideoHandler) AdvancedSearchVideos(c *gin.Context) {
+func (h *VideoHandler) SearchVideos(c *gin.Context) {
 	h.setVideoListHeaders(c)
 
 	query := c.Query("q")
@@ -78,43 +77,13 @@ func (h *VideoHandler) AdvancedSearchVideos(c *gin.Context) {
 		return
 	}
 
-	// Parse search parameters
-	filters := models.SearchFilters{
-		UserID:    c.Query("userId"),
-		MediaType: c.DefaultQuery("mediaType", "all"),
-		TimeRange: c.DefaultQuery("timeRange", "all"),
-		SortBy:    c.DefaultQuery("sortBy", "relevance"),
-	}
-
-	// Parse tags filter
-	if tagsStr := c.Query("tags"); tagsStr != "" {
-		filters.Tags = strings.Split(tagsStr, ",")
-	}
-
-	// Parse numeric filters
-	if minLikesStr := c.Query("minLikes"); minLikesStr != "" {
-		if minLikes, err := strconv.Atoi(minLikesStr); err == nil && minLikes > 0 {
-			filters.MinLikes = minLikes
-		}
-	}
-
-	// Parse boolean filters
-	if hasPriceStr := c.Query("hasPrice"); hasPriceStr != "" {
-		if hasPrice, err := strconv.ParseBool(hasPriceStr); err == nil {
-			filters.HasPrice = &hasPrice
-		}
-	}
-
-	if isVerifiedStr := c.Query("isVerified"); isVerifiedStr != "" {
-		if isVerified, err := strconv.ParseBool(isVerifiedStr); err == nil {
-			filters.IsVerified = &isVerified
-		}
-	}
+	// Optional filter for username-only results
+	usernameOnly := c.Query("usernameOnly") == "true"
 
 	// Parse pagination
 	limit := 20
 	if l := c.Query("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 50 {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 100 {
 			limit = parsed
 		}
 	}
@@ -126,23 +95,8 @@ func (h *VideoHandler) AdvancedSearchVideos(c *gin.Context) {
 		}
 	}
 
-	// Parse search mode
-	mode := models.SearchModeCombined
-	if modeStr := c.Query("mode"); modeStr != "" {
-		switch modeStr {
-		case "exact":
-			mode = models.SearchModeExact
-		case "fuzzy":
-			mode = models.SearchModeFuzzy
-		case "fulltext":
-			mode = models.SearchModeFullText
-		case "combined":
-			mode = models.SearchModeCombined
-		}
-	}
-
-	// Perform search
-	searchResponse, err := h.service.AdvancedSearchVideos(c.Request.Context(), query, filters, mode, limit, offset)
+	// Perform fuzzy search
+	videos, total, err := h.service.FuzzySearch(c.Request.Context(), query, usernameOnly, limit, offset)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Search failed",
@@ -151,32 +105,23 @@ func (h *VideoHandler) AdvancedSearchVideos(c *gin.Context) {
 		return
 	}
 
-	// Format response
-	videos := make([]models.VideoResponse, len(searchResponse.Results))
-	for i, result := range searchResponse.Results {
-		videos[i] = *result.Video
-		// Optionally include relevance score in response
-		if c.Query("includeRelevance") == "true" {
-			videos[i].UserRole = videos[i].UserRole + " (relevance: " + strconv.FormatFloat(result.Relevance, 'f', 2, 64) + ")"
-		}
-	}
-
 	c.JSON(http.StatusOK, gin.H{
-		"videos":      videos,
-		"total":       searchResponse.Total,
-		"query":       searchResponse.Query,
-		"searchMode":  searchResponse.SearchMode,
-		"timeTaken":   searchResponse.TimeTaken,
-		"suggestions": searchResponse.Suggestions,
-		"page":        searchResponse.Page,
-		"hasMore":     searchResponse.HasMore,
-		"filters":     filters,
-		"cached_at":   time.Now().Unix(),
-		"ttl":         300, // 5 minutes cache for search results
+		"videos":       videos,
+		"total":        total,
+		"query":        query,
+		"usernameOnly": usernameOnly,
+		"page":         (offset / limit) + 1,
+		"limit":        limit,
+		"hasMore":      len(videos) == limit,
+		"cached_at":    time.Now().Unix(),
+		"ttl":          900,
 	})
 }
 
-// Get popular search terms for autocomplete
+// ===============================
+// 🔍 POPULAR SEARCH TERMS
+// ===============================
+
 func (h *VideoHandler) GetPopularSearchTerms(c *gin.Context) {
 	h.setVideoListHeaders(c)
 
@@ -201,47 +146,170 @@ func (h *VideoHandler) GetPopularSearchTerms(c *gin.Context) {
 		"total":     len(terms),
 		"limit":     limit,
 		"cached_at": time.Now().Unix(),
-		"ttl":       1800, // 30 minutes cache
+		"ttl":       1800,
 	})
 }
 
-// Quick search suggestions (for real-time search)
-func (h *VideoHandler) GetSearchSuggestions(c *gin.Context) {
-	h.setInteractionHeaders(c) // No cache for real-time suggestions
+// ===============================
+// 🔍 SEARCH HISTORY ENDPOINTS
+// ===============================
 
-	query := c.Query("q")
-	if query == "" || len(query) < 2 {
-		c.JSON(http.StatusOK, gin.H{
-			"suggestions": []string{},
-			"query":       query,
+// Get user's search history
+func (h *VideoHandler) GetSearchHistory(c *gin.Context) {
+	h.setInteractionHeaders(c)
+
+	userID := c.GetString("userID")
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "User not authenticated",
+			"code":  "AUTH_REQUIRED",
 		})
 		return
 	}
 
-	// Quick prefix search for suggestions
-	suggestions, err := h.service.GetSearchSuggestions(c.Request.Context(), query, 5)
+	limit := 20
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 50 {
+			limit = parsed
+		}
+	}
+
+	history, err := h.service.GetSearchHistory(c.Request.Context(), userID, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to get search suggestions",
-			"code":  "SUGGESTIONS_ERROR",
+			"error": "Failed to get search history",
+			"code":  "HISTORY_ERROR",
 		})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"suggestions": suggestions,
-		"query":       query,
-		"total":       len(suggestions),
+		"history": history,
+		"total":   len(history),
+		"userId":  userID,
+	})
+}
+
+// Add to search history
+func (h *VideoHandler) AddSearchHistory(c *gin.Context) {
+	h.setInteractionHeaders(c)
+
+	userID := c.GetString("userID")
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "User not authenticated",
+			"code":  "AUTH_REQUIRED",
+		})
+		return
+	}
+
+	var request struct {
+		Query string `json:"query" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request format",
+			"code":    "INVALID_REQUEST",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	if strings.TrimSpace(request.Query) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Search query cannot be empty",
+			"code":  "EMPTY_QUERY",
+		})
+		return
+	}
+
+	err := h.service.AddSearchHistory(c.Request.Context(), userID, request.Query)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to add search history",
+			"code":  "ADD_HISTORY_ERROR",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Search added to history",
+		"query":   request.Query,
+	})
+}
+
+// Clear all search history
+func (h *VideoHandler) ClearSearchHistory(c *gin.Context) {
+	h.setInteractionHeaders(c)
+
+	userID := c.GetString("userID")
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "User not authenticated",
+			"code":  "AUTH_REQUIRED",
+		})
+		return
+	}
+
+	err := h.service.ClearSearchHistory(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to clear search history",
+			"code":  "CLEAR_HISTORY_ERROR",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Search history cleared",
+		"userId":  userID,
+	})
+}
+
+// Remove specific search from history
+func (h *VideoHandler) RemoveSearchHistory(c *gin.Context) {
+	h.setInteractionHeaders(c)
+
+	userID := c.GetString("userID")
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "User not authenticated",
+			"code":  "AUTH_REQUIRED",
+		})
+		return
+	}
+
+	query := c.Param("query")
+	if query == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Query parameter required",
+			"code":  "MISSING_QUERY",
+		})
+		return
+	}
+
+	err := h.service.RemoveSearchHistory(c.Request.Context(), userID, query)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to remove search history",
+			"code":  "REMOVE_HISTORY_ERROR",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Search removed from history",
+		"query":   query,
 	})
 }
 
 // ===============================
-// PUBLIC VIDEO ENDPOINTS WITH PERFORMANCE OPTIMIZATIONS
+// PUBLIC VIDEO ENDPOINTS
 // ===============================
 
-// 🚀 OPTIMIZED: GetVideos with enhanced caching and headers
 func (h *VideoHandler) GetVideos(c *gin.Context) {
-	h.setVideoListHeaders(c) // Apply caching headers
+	h.setVideoListHeaders(c)
 
 	params := models.VideoSearchParams{
 		Limit:  20,
@@ -249,7 +317,6 @@ func (h *VideoHandler) GetVideos(c *gin.Context) {
 		SortBy: "latest",
 	}
 
-	// Parse query parameters
 	if l := c.Query("limit"); l != "" {
 		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 100 {
 			params.Limit = parsed
@@ -304,11 +371,10 @@ func (h *VideoHandler) GetVideos(c *gin.Context) {
 		"limit":     params.Limit,
 		"hasMore":   len(videos) == params.Limit,
 		"cached_at": time.Now().Unix(),
-		"ttl":       900, // 15 minutes
+		"ttl":       900,
 	})
 }
 
-// 🚀 NEW: Bulk video endpoint for efficient pagination
 func (h *VideoHandler) GetVideosBulk(c *gin.Context) {
 	h.setVideoListHeaders(c)
 
@@ -360,7 +426,6 @@ func (h *VideoHandler) GetVideosBulk(c *gin.Context) {
 	})
 }
 
-// 🚀 OPTIMIZED: GetFeaturedVideos with performance headers
 func (h *VideoHandler) GetFeaturedVideos(c *gin.Context) {
 	h.setVideoListHeaders(c)
 
@@ -389,7 +454,6 @@ func (h *VideoHandler) GetFeaturedVideos(c *gin.Context) {
 	})
 }
 
-// 🚀 OPTIMIZED: GetTrendingVideos with performance headers
 func (h *VideoHandler) GetTrendingVideos(c *gin.Context) {
 	h.setVideoListHeaders(c)
 
@@ -418,7 +482,6 @@ func (h *VideoHandler) GetTrendingVideos(c *gin.Context) {
 	})
 }
 
-// 🚀 OPTIMIZED: GetVideo with streaming headers and URL optimization
 func (h *VideoHandler) GetVideo(c *gin.Context) {
 	h.setVideoAPIHeaders(c)
 
@@ -441,7 +504,6 @@ func (h *VideoHandler) GetVideo(c *gin.Context) {
 		return
 	}
 
-	// Add video-specific streaming headers
 	if video.VideoURL != "" {
 		h.setVideoStreamingHeaders(c)
 	}
@@ -449,7 +511,6 @@ func (h *VideoHandler) GetVideo(c *gin.Context) {
 	c.JSON(http.StatusOK, video)
 }
 
-// 🚀 NEW: Get video qualities for adaptive streaming (future-ready)
 func (h *VideoHandler) GetVideoQualities(c *gin.Context) {
 	h.setVideoStreamingHeaders(c)
 
@@ -471,7 +532,6 @@ func (h *VideoHandler) GetVideoQualities(c *gin.Context) {
 		return
 	}
 
-	// Currently return single quality, but structured for future expansion
 	qualities := []gin.H{
 		{
 			"quality":    "original",
@@ -483,7 +543,6 @@ func (h *VideoHandler) GetVideoQualities(c *gin.Context) {
 		},
 	}
 
-	// Add thumbnail as preview quality
 	if video.ThumbnailURL != "" {
 		qualities = append(qualities, gin.H{
 			"quality":    "preview",
@@ -499,11 +558,10 @@ func (h *VideoHandler) GetVideoQualities(c *gin.Context) {
 		"videoId":   videoID,
 		"qualities": qualities,
 		"total":     len(qualities),
-		"adaptive":  false, // Future feature
+		"adaptive":  false,
 	})
 }
 
-// 🚀 OPTIMIZED: GetUserVideos with performance headers
 func (h *VideoHandler) GetUserVideos(c *gin.Context) {
 	h.setVideoListHeaders(c)
 
@@ -552,12 +610,11 @@ func (h *VideoHandler) GetUserVideos(c *gin.Context) {
 }
 
 // ===============================
-// VIDEO INTERACTION ENDPOINTS WITH PERFORMANCE OPTIMIZATIONS
+// VIDEO INTERACTION ENDPOINTS
 // ===============================
 
-// 🚀 OPTIMIZED: IncrementViews with better error handling
 func (h *VideoHandler) IncrementViews(c *gin.Context) {
-	h.setInteractionHeaders(c) // No cache for interactions
+	h.setInteractionHeaders(c)
 
 	videoID := c.Param("videoId")
 	if videoID == "" {
@@ -570,7 +627,6 @@ func (h *VideoHandler) IncrementViews(c *gin.Context) {
 
 	err := h.service.IncrementVideoViews(c.Request.Context(), videoID)
 	if err != nil {
-		// Don't return error for view counting failures, just log and continue
 		c.JSON(http.StatusOK, gin.H{
 			"message": "View counted",
 			"videoId": videoID,
@@ -586,7 +642,6 @@ func (h *VideoHandler) IncrementViews(c *gin.Context) {
 	})
 }
 
-// 🚀 OPTIMIZED: LikeVideo with immediate count update
 func (h *VideoHandler) LikeVideo(c *gin.Context) {
 	h.setInteractionHeaders(c)
 
@@ -624,10 +679,8 @@ func (h *VideoHandler) LikeVideo(c *gin.Context) {
 		return
 	}
 
-	// Get updated counts
 	summary, err := h.service.GetVideoCountsSummary(c.Request.Context(), videoID)
 	if err != nil {
-		// Still return success even if we can't get updated counts
 		c.JSON(http.StatusOK, gin.H{
 			"message": "Video liked successfully",
 			"videoId": videoID,
@@ -644,7 +697,6 @@ func (h *VideoHandler) LikeVideo(c *gin.Context) {
 	})
 }
 
-// 🚀 OPTIMIZED: UnlikeVideo with immediate count update
 func (h *VideoHandler) UnlikeVideo(c *gin.Context) {
 	h.setInteractionHeaders(c)
 
@@ -682,10 +734,8 @@ func (h *VideoHandler) UnlikeVideo(c *gin.Context) {
 		return
 	}
 
-	// Get updated counts
 	summary, err := h.service.GetVideoCountsSummary(c.Request.Context(), videoID)
 	if err != nil {
-		// Still return success even if we can't get updated counts
 		c.JSON(http.StatusOK, gin.H{
 			"message": "Video unliked successfully",
 			"videoId": videoID,
@@ -702,7 +752,6 @@ func (h *VideoHandler) UnlikeVideo(c *gin.Context) {
 	})
 }
 
-// 🚀 OPTIMIZED: ShareVideo with immediate count update
 func (h *VideoHandler) ShareVideo(c *gin.Context) {
 	h.setInteractionHeaders(c)
 
@@ -724,10 +773,8 @@ func (h *VideoHandler) ShareVideo(c *gin.Context) {
 		return
 	}
 
-	// Get updated counts
 	summary, err := h.service.GetVideoCountsSummary(c.Request.Context(), videoID)
 	if err != nil {
-		// Still return success even if we can't get updated counts
 		c.JSON(http.StatusOK, gin.H{
 			"message": "Video shared successfully",
 			"videoId": videoID,
@@ -744,9 +791,8 @@ func (h *VideoHandler) ShareVideo(c *gin.Context) {
 	})
 }
 
-// 🚀 OPTIMIZED: GetVideoCountsSummary for real-time count updates
 func (h *VideoHandler) GetVideoCountsSummary(c *gin.Context) {
-	h.setInteractionHeaders(c) // No cache for real-time data
+	h.setInteractionHeaders(c)
 
 	videoID := c.Param("videoId")
 	if videoID == "" {
@@ -769,7 +815,6 @@ func (h *VideoHandler) GetVideoCountsSummary(c *gin.Context) {
 	c.JSON(http.StatusOK, summary)
 }
 
-// 🚀 OPTIMIZED: GetUserLikedVideos with performance headers
 func (h *VideoHandler) GetUserLikedVideos(c *gin.Context) {
 	h.setVideoListHeaders(c)
 
@@ -782,7 +827,6 @@ func (h *VideoHandler) GetUserLikedVideos(c *gin.Context) {
 		return
 	}
 
-	// Users can only view their own liked videos unless admin
 	requestingUserID := c.GetString("userID")
 	if requestingUserID != userID {
 		c.JSON(http.StatusForbidden, gin.H{
@@ -826,10 +870,9 @@ func (h *VideoHandler) GetUserLikedVideos(c *gin.Context) {
 }
 
 // ===============================
-// 🚀 UPDATED: AUTHENTICATED VIDEO ENDPOINTS WITH ROLE VALIDATION
+// AUTHENTICATED VIDEO ENDPOINTS
 // ===============================
 
-// 🚀 UPDATED: CreateVideo with role-based validation and price support
 func (h *VideoHandler) CreateVideo(c *gin.Context) {
 	h.setInteractionHeaders(c)
 
@@ -842,14 +885,13 @@ func (h *VideoHandler) CreateVideo(c *gin.Context) {
 		return
 	}
 
-	// 🆕 NEW: Validate user can post videos based on role
 	err := h.userService.ValidateUserForVideoCreation(c.Request.Context(), userID)
 	if err != nil {
 		c.JSON(http.StatusForbidden, gin.H{
 			"error":        "Video creation not allowed",
 			"code":         "ROLE_PERMISSION_DENIED",
 			"details":      err.Error(),
-			"allowedRoles": []string{"admin", "host", "guest"},
+			"allowedRoles": []string{"admin", "host"},
 		})
 		return
 	}
@@ -864,17 +906,6 @@ func (h *VideoHandler) CreateVideo(c *gin.Context) {
 		return
 	}
 
-	// Enhanced video URL validation
-	if request.VideoURL != "" && !h.isValidVideoURL(request.VideoURL) {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":             "Invalid video URL format",
-			"code":              "INVALID_VIDEO_URL",
-			"supported_formats": []string{"mp4", "mov", "webm", "m3u8", "ts"},
-		})
-		return
-	}
-
-	// 🚀 UPDATED: Get user info including role
 	userName, userImage, userRole, err := h.userService.GetUserBasicInfo(c.Request.Context(), userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -884,13 +915,12 @@ func (h *VideoHandler) CreateVideo(c *gin.Context) {
 		return
 	}
 
-	// Double-check role permissions (belt and suspenders approach)
 	if !userRole.CanPost() {
 		c.JSON(http.StatusForbidden, gin.H{
 			"error":        "User role cannot post videos",
 			"code":         "ROLE_PERMISSION_DENIED",
 			"userRole":     userRole.String(),
-			"allowedRoles": []string{"admin", "host", "guest"},
+			"allowedRoles": []string{"admin", "host"},
 		})
 		return
 	}
@@ -907,13 +937,11 @@ func (h *VideoHandler) CreateVideo(c *gin.Context) {
 		ImageUrls:        models.StringSlice(request.ImageUrls),
 	}
 
-	// 🔧 SIMPLE: Handle price field
-	if request.Price != nil {
-		if *request.Price >= 0 {
-			video.Price = *request.Price
-		}
+	if request.Price != nil && *request.Price >= 0 {
+		video.Price = *request.Price
+	} else {
+		video.Price = 0.00 // Explicit default
 	}
-	// IsVerified defaults to false (admin sets it later)
 
 	videoID, err := h.service.CreateVideoOptimized(c.Request.Context(), video)
 	if err != nil {
@@ -928,43 +956,9 @@ func (h *VideoHandler) CreateVideo(c *gin.Context) {
 		"videoId":  videoID,
 		"message":  "Video created successfully",
 		"status":   "created",
-		"userRole": userRole.String(),
-		"canPost":  true,
 		"price":    video.Price,
 		"verified": video.IsVerified,
 	})
-}
-
-// 🔧 Helper: Video URL validation
-func (h *VideoHandler) isValidVideoURL(url string) bool {
-	if url == "" {
-		return false
-	}
-
-	// Basic URL format check
-	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-		return false
-	}
-
-	// Check for common video file extensions
-	validExtensions := []string{".mp4", ".mov", ".webm", ".avi", ".mkv", ".m3u8", ".ts", ".m4v"}
-	urlLower := strings.ToLower(url)
-
-	for _, ext := range validExtensions {
-		if strings.Contains(urlLower, ext) {
-			return true
-		}
-	}
-
-	// Allow streaming URLs without extensions (like YouTube, Vimeo, etc.)
-	streamingDomains := []string{"youtube.com", "youtu.be", "vimeo.com", "twitch.tv", "cloudflare.com"}
-	for _, domain := range streamingDomains {
-		if strings.Contains(urlLower, domain) {
-			return true
-		}
-	}
-
-	return false
 }
 
 func (h *VideoHandler) UpdateVideo(c *gin.Context) {
@@ -1068,7 +1062,7 @@ func (h *VideoHandler) GetFollowingFeed(c *gin.Context) {
 }
 
 // ===============================
-// COMMENT ENDPOINTS WITH CACHING
+// COMMENT ENDPOINTS
 // ===============================
 
 func (h *VideoHandler) CreateComment(c *gin.Context) {
@@ -1092,7 +1086,6 @@ func (h *VideoHandler) CreateComment(c *gin.Context) {
 		return
 	}
 
-	// 🚀 UPDATED: Get user info including role
 	userName, userImage, _, err := h.userService.GetUserBasicInfo(c.Request.Context(), userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "User not found"})
@@ -1123,7 +1116,7 @@ func (h *VideoHandler) CreateComment(c *gin.Context) {
 }
 
 func (h *VideoHandler) GetVideoComments(c *gin.Context) {
-	h.setCommentHeaders(c) // 5 minutes cache for comments
+	h.setCommentHeaders(c)
 
 	videoID := c.Param("videoId")
 	if videoID == "" {
@@ -1155,7 +1148,7 @@ func (h *VideoHandler) GetVideoComments(c *gin.Context) {
 		"comments":  comments,
 		"total":     len(comments),
 		"cached_at": time.Now().Unix(),
-		"ttl":       300, // 5 minutes
+		"ttl":       300,
 	})
 }
 
@@ -1244,7 +1237,7 @@ func (h *VideoHandler) UnlikeComment(c *gin.Context) {
 }
 
 // ===============================
-// SOCIAL ENDPOINTS WITH PERFORMANCE HEADERS
+// SOCIAL ENDPOINTS
 // ===============================
 
 func (h *VideoHandler) FollowUser(c *gin.Context) {
@@ -1376,7 +1369,7 @@ func (h *VideoHandler) GetUserFollowing(c *gin.Context) {
 }
 
 // ===============================
-// ADMIN ENDPOINTS WITH PERFORMANCE HEADERS
+// ADMIN ENDPOINTS
 // ===============================
 
 func (h *VideoHandler) ToggleFeatured(c *gin.Context) {
@@ -1451,7 +1444,6 @@ func (h *VideoHandler) ToggleActive(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Video " + status + " successfully"})
 }
 
-// 🔧 SIMPLE: Add basic verification toggle endpoint
 func (h *VideoHandler) ToggleVerified(c *gin.Context) {
 	h.setInteractionHeaders(c)
 
@@ -1470,14 +1462,12 @@ func (h *VideoHandler) ToggleVerified(c *gin.Context) {
 		return
 	}
 
-	// Get video first to update it
 	video, err := h.service.GetVideoOptimized(c.Request.Context(), videoID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Video not found"})
 		return
 	}
 
-	// Convert response back to model for update
 	videoModel := &models.Video{
 		ID:               video.ID,
 		UserID:           video.UserID,
@@ -1486,7 +1476,7 @@ func (h *VideoHandler) ToggleVerified(c *gin.Context) {
 		Tags:             video.Tags,
 		IsActive:         video.IsActive,
 		IsFeatured:       video.IsFeatured,
-		IsVerified:       request.IsVerified, // Update verification
+		IsVerified:       request.IsVerified,
 		IsMultipleImages: video.IsMultipleImages,
 	}
 
@@ -1530,7 +1520,7 @@ func (h *VideoHandler) GetVideoStats(c *gin.Context) {
 }
 
 // ===============================
-// ADDITIONAL UTILITY ENDPOINTS WITH PERFORMANCE OPTIMIZATIONS
+// UTILITY ENDPOINTS
 // ===============================
 
 func (h *VideoHandler) BatchUpdateCounts(c *gin.Context) {
@@ -1545,28 +1535,6 @@ func (h *VideoHandler) BatchUpdateCounts(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message":   "Counts updated successfully",
 		"timestamp": time.Now(),
-	})
-}
-
-func (h *VideoHandler) HealthCheck(c *gin.Context) {
-	c.Header("Cache-Control", "no-cache")
-
-	c.JSON(http.StatusOK, gin.H{
-		"status":    "healthy",
-		"service":   "video-service-optimized",
-		"timestamp": time.Now(),
-		"version":   "1.1.0-performance",
-		"features": gin.H{
-			"streaming_headers": true,
-			"bulk_endpoints":    true,
-			"url_optimization":  true,
-			"gzip_compression":  true,
-			"smart_caching":     true,
-			"role_validation":   true,
-			"price_support":     true, // NEW
-			"verification":      true, // NEW
-			"search_support":    true, // NEW: Added search capabilities
-		},
 	})
 }
 
@@ -1597,8 +1565,8 @@ func (h *VideoHandler) GetVideoMetrics(c *gin.Context) {
 		"likes":          video.LikesCount,
 		"comments":       video.CommentsCount,
 		"shares":         video.SharesCount,
-		"price":          video.Price,      // NEW
-		"isVerified":     video.IsVerified, // NEW
+		"price":          video.Price,
+		"isVerified":     video.IsVerified,
 		"engagement":     totalEngagement,
 		"engagementRate": engagementRate,
 		"createdAt":      video.CreatedAt,
@@ -1606,62 +1574,6 @@ func (h *VideoHandler) GetVideoMetrics(c *gin.Context) {
 		"isFeatured":     video.IsFeatured,
 		"cached_at":      time.Now().Unix(),
 		"ttl":            1800,
-	})
-}
-
-func (h *VideoHandler) SearchVideos(c *gin.Context) {
-	h.setVideoListHeaders(c)
-
-	query := c.Query("q")
-	if query == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Search query required"})
-		return
-	}
-
-	params := models.VideoSearchParams{
-		Query:  query,
-		Limit:  20,
-		Offset: 0,
-		SortBy: "latest",
-	}
-
-	if l := c.Query("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 100 {
-			params.Limit = parsed
-		}
-	}
-
-	if o := c.Query("offset"); o != "" {
-		if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 {
-			params.Offset = parsed
-		}
-	}
-
-	if s := c.Query("sortBy"); s != "" {
-		params.SortBy = s
-	}
-
-	if m := c.Query("mediaType"); m != "" {
-		params.MediaType = m
-	}
-
-	videos, err := h.service.GetVideosOptimized(c.Request.Context(), params)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to search videos"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"videos":    videos,
-		"total":     len(videos),
-		"query":     query,
-		"page":      (params.Offset / params.Limit) + 1,
-		"limit":     params.Limit,
-		"hasMore":   len(videos) == params.Limit,
-		"sortBy":    params.SortBy,
-		"mediaType": params.MediaType,
-		"cached_at": time.Now().Unix(),
-		"ttl":       900,
 	})
 }
 
@@ -1837,8 +1749,8 @@ func (h *VideoHandler) GetVideoAnalytics(c *gin.Context) {
 		"likes":           video.LikesCount,
 		"comments":        video.CommentsCount,
 		"shares":          video.SharesCount,
-		"price":           video.Price,      // NEW
-		"isVerified":      video.IsVerified, // NEW
+		"price":           video.Price,
+		"isVerified":      video.IsVerified,
 		"totalEngagement": totalEngagement,
 		"engagementRate":  engagementRate,
 		"likeRate":        likeRate,
@@ -1850,8 +1762,6 @@ func (h *VideoHandler) GetVideoAnalytics(c *gin.Context) {
 		"updatedAt":       video.UpdatedAt,
 		"performance":     "good",
 		"optimized":       true,
-		"roleValidation":  true,
-		"searchSupport":   true, // NEW: Indicates search is supported
 		"cached_at":       time.Now().Unix(),
 		"ttl":             1800,
 	})

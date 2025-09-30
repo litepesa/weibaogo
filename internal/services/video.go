@@ -1,5 +1,5 @@
 // ===============================
-// internal/services/video.go - COMPLETE UPDATED Video Service with Search Support
+// internal/services/video.go - SIMPLIFIED with Fuzzy Search + History
 // ===============================
 
 package services
@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -34,35 +35,29 @@ func NewVideoService(db *sqlx.DB, r2Client *storage.R2Client) *VideoService {
 // URL OPTIMIZATION HELPERS
 // ===============================
 
-// 🚀 NEW: URL optimization for video streaming
 func (s *VideoService) optimizeVideoURL(url string) string {
 	if url == "" {
 		return url
 	}
 
-	// Add streaming optimizations for different providers
 	if strings.Contains(url, "cloudflare.com") || strings.Contains(url, "r2.cloudflarestorage.com") {
-		// Add Cloudflare streaming optimizations
 		if !strings.Contains(url, "?") {
 			return url + "?cf_optimize=true"
 		}
 		return url + "&cf_optimize=true"
 	}
 
-	// Add generic streaming parameters
 	if !strings.Contains(url, "?") {
 		return url + "?stream=true"
 	}
 	return url + "&stream=true"
 }
 
-// 🚀 NEW: Thumbnail URL optimization
 func (s *VideoService) optimizeThumbnailURL(url string) string {
 	if url == "" {
 		return url
 	}
 
-	// Add image optimization parameters
 	if strings.Contains(url, "cloudflare.com") {
 		if !strings.Contains(url, "?") {
 			return url + "?format=webp&quality=85&width=640"
@@ -73,24 +68,21 @@ func (s *VideoService) optimizeThumbnailURL(url string) string {
 	return url
 }
 
-// 🚀 UPDATED: Apply URL optimizations to video response
 func (s *VideoService) applyURLOptimizations(video *models.VideoResponse) {
 	video.VideoURL = s.optimizeVideoURL(video.VideoURL)
 	video.ThumbnailURL = s.optimizeThumbnailURL(video.ThumbnailURL)
 	video.UserImage = s.optimizeThumbnailURL(video.UserImage)
 	video.UserProfileImage = s.optimizeThumbnailURL(video.UserProfileImage)
 
-	// Optimize image URLs in array
 	for i, imageURL := range video.ImageUrls {
 		video.ImageUrls[i] = s.optimizeThumbnailURL(imageURL)
 	}
 }
 
 // ===============================
-// 🆕 NEW: ROLE-BASED VALIDATION HELPERS
+// ROLE-BASED VALIDATION HELPERS
 // ===============================
 
-// 🆕 NEW: ValidateUserCanCreateVideo validates user role and status for video creation
 func (s *VideoService) ValidateUserCanCreateVideo(ctx context.Context, userID string) (*models.User, error) {
 	var user models.User
 	query := `
@@ -108,12 +100,10 @@ func (s *VideoService) ValidateUserCanCreateVideo(ctx context.Context, userID st
 		return nil, fmt.Errorf("user not found: %s", userID)
 	}
 
-	// Check if user account is active
 	if !user.IsActive {
 		return nil, fmt.Errorf("user account is inactive")
 	}
 
-	// Check if user role allows posting videos
 	if !user.CanPost() {
 		return nil, fmt.Errorf("user role '%s' cannot post videos. Only admin and host users can post", user.Role.DisplayName())
 	}
@@ -121,281 +111,84 @@ func (s *VideoService) ValidateUserCanCreateVideo(ctx context.Context, userID st
 	return &user, nil
 }
 
-// 🆕 NEW: GetUserBasicInfoWithRole retrieves user info including role for video operations
-func (s *VideoService) GetUserBasicInfoWithRole(ctx context.Context, userID string) (string, string, models.UserRole, error) {
-	var name, profileImage string
-	var role models.UserRole
-
-	query := `
-		SELECT name, profile_image, role 
-		FROM users 
-		WHERE uid = $1 AND is_active = true`
-
-	err := s.db.QueryRowContext(ctx, query, userID).Scan(&name, &profileImage, &role)
-	if err != nil {
-		return "", "", models.UserRoleGuest, fmt.Errorf("failed to get user info: %w", err)
-	}
-
-	return name, profileImage, role, nil
-}
-
-// 🆕 NEW: CheckUserPostingPermission quickly checks if user can post
-func (s *VideoService) CheckUserPostingPermission(ctx context.Context, userID string) error {
-	var role models.UserRole
-	var isActive bool
-
-	query := `
-		SELECT role, is_active 
-		FROM users 
-		WHERE uid = $1`
-
-	err := s.db.QueryRowContext(ctx, query, userID).Scan(&role, &isActive)
-	if err != nil {
-		return fmt.Errorf("user not found: %s", userID)
-	}
-
-	if !isActive {
-		return fmt.Errorf("user account is inactive")
-	}
-
-	if !role.CanPost() {
-		return fmt.Errorf("user role '%s' cannot post videos", role.DisplayName())
-	}
-
-	return nil
-}
-
 // ===============================
-// 🆕 NEW: SEARCH METHODS
+// SIMPLIFIED FUZZY SEARCH
 // ===============================
 
-// AdvancedSearchVideos with multiple search strategies
-func (s *VideoService) AdvancedSearchVideos(ctx context.Context, query string, filters models.SearchFilters, mode models.SearchMode, limit, offset int) (*models.SearchResponse, error) {
+// FuzzySearch - Simple fuzzy search across username, caption, and tags
+func (s *VideoService) FuzzySearch(ctx context.Context, query string, usernameOnly bool, limit, offset int) ([]models.VideoResponse, int, error) {
 	startTime := time.Now()
 
-	// Sanitize and prepare query
+	// Sanitize query
 	cleanQuery := strings.TrimSpace(query)
 	if cleanQuery == "" {
-		return &models.SearchResponse{
-			Results:   []models.SearchResult{},
-			Total:     0,
-			Query:     query,
-			TimeTaken: time.Since(startTime).Milliseconds(),
-		}, nil
+		return []models.VideoResponse{}, 0, nil
 	}
 
-	var results []models.SearchResult
-	var err error
+	log.Printf("Fuzzy search: query='%s', usernameOnly=%v", cleanQuery, usernameOnly)
 
-	switch mode {
-	case models.SearchModeExact:
-		results, err = s.searchExact(ctx, cleanQuery, filters, limit, offset)
-	case models.SearchModeFuzzy:
-		results, err = s.searchFuzzy(ctx, cleanQuery, filters, limit, offset)
-	case models.SearchModeFullText:
-		results, err = s.searchFullText(ctx, cleanQuery, filters, limit, offset)
-	case models.SearchModeCombined:
-		results, err = s.searchCombined(ctx, cleanQuery, filters, limit, offset)
-	default:
-		results, err = s.searchCombined(ctx, cleanQuery, filters, limit, offset)
+	// Build search pattern for fuzzy matching
+	searchPattern := "%" + strings.ToLower(cleanQuery) + "%"
+
+	var searchQuery string
+	var args []interface{}
+
+	if usernameOnly {
+		// Search ONLY in username
+		searchQuery = `
+			SELECT v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
+			       v.caption, v.price, v.likes_count, v.comments_count, v.views_count, v.shares_count,
+			       v.tags, v.is_active, v.is_featured, v.is_verified, v.is_multiple_images, v.image_urls,
+			       v.created_at, v.updated_at,
+			       similarity(v.user_name, $1) as relevance
+			FROM videos v
+			WHERE v.is_active = true
+			  AND (LOWER(v.user_name) LIKE $2 OR v.user_name % $1)
+			ORDER BY relevance DESC, v.created_at DESC
+			LIMIT $3 OFFSET $4`
+
+		args = []interface{}{cleanQuery, searchPattern, limit, offset}
+	} else {
+		// Search in username, caption, AND tags (fuzzy matching)
+		searchQuery = `
+			SELECT v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
+			       v.caption, v.price, v.likes_count, v.comments_count, v.views_count, v.shares_count,
+			       v.tags, v.is_active, v.is_featured, v.is_verified, v.is_multiple_images, v.image_urls,
+			       v.created_at, v.updated_at,
+			       GREATEST(
+			         similarity(v.user_name, $1),
+			         similarity(v.caption, $1),
+			         CASE 
+			           WHEN array_to_string(v.tags, ' ') % $1 THEN 0.7
+			           ELSE 0.0
+			         END
+			       ) as relevance
+			FROM videos v
+			WHERE v.is_active = true
+			  AND (
+			    LOWER(v.user_name) LIKE $2 OR v.user_name % $1 OR
+			    LOWER(v.caption) LIKE $2 OR v.caption % $1 OR
+			    LOWER(array_to_string(v.tags, ' ')) LIKE $2
+			  )
+			ORDER BY relevance DESC, v.created_at DESC
+			LIMIT $3 OFFSET $4`
+
+		args = []interface{}{cleanQuery, searchPattern, limit, offset}
 	}
 
+	log.Printf("Executing query with pattern: %s", searchPattern)
+
+	rows, err := s.db.QueryContext(ctx, searchQuery, args...)
 	if err != nil {
-		return nil, err
-	}
-
-	// Generate search suggestions for empty/low results
-	suggestions := []string{}
-	if len(results) < 3 {
-		suggestions = s.generateSearchSuggestions(cleanQuery)
-	}
-
-	return &models.SearchResponse{
-		Results:     results,
-		Total:       len(results),
-		Query:       query,
-		SearchMode:  mode,
-		TimeTaken:   time.Since(startTime).Milliseconds(),
-		Suggestions: suggestions,
-		Page:        (offset / limit) + 1,
-		HasMore:     len(results) == limit,
-	}, nil
-}
-
-// Exact phrase search (fastest, most precise)
-func (s *VideoService) searchExact(ctx context.Context, query string, filters models.SearchFilters, limit, offset int) ([]models.SearchResult, error) {
-	baseQuery := `
-		SELECT v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
-		       v.caption, v.price, v.likes_count, v.comments_count, v.views_count, v.shares_count,
-		       v.tags, v.is_active, v.is_featured, v.is_verified, v.is_multiple_images, v.image_urls,
-		       v.created_at, v.updated_at, u.role as user_role,
-		       CASE 
-		         WHEN LOWER(v.caption) LIKE LOWER($1) THEN 1.0
-		         WHEN LOWER(v.user_name) LIKE LOWER($1) THEN 0.8
-		         ELSE 0.5
-		       END as relevance,
-		       CASE 
-		         WHEN LOWER(v.caption) LIKE LOWER($1) THEN 'caption'
-		         WHEN LOWER(v.user_name) LIKE LOWER($1) THEN 'username'
-		         ELSE 'other'
-		       END as match_type
-		FROM videos v
-		JOIN users u ON v.user_id = u.uid
-		WHERE v.is_active = true AND u.is_active = true
-		  AND (LOWER(v.caption) LIKE LOWER($1) OR LOWER(v.user_name) LIKE LOWER($1))`
-
-	args := []interface{}{"%" + query + "%"}
-	finalQuery, args := s.applySearchFilters(baseQuery, filters, args)
-	finalQuery += fmt.Sprintf(" ORDER BY relevance DESC, v.created_at DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
-	args = append(args, limit, offset)
-
-	return s.executeSearchQuery(ctx, finalQuery, args)
-}
-
-// Fuzzy search with trigram similarity (handles typos)
-func (s *VideoService) searchFuzzy(ctx context.Context, query string, filters models.SearchFilters, limit, offset int) ([]models.SearchResult, error) {
-	baseQuery := `
-		SELECT v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
-		       v.caption, v.price, v.likes_count, v.comments_count, v.views_count, v.shares_count,
-		       v.tags, v.is_active, v.is_featured, v.is_verified, v.is_multiple_images, v.image_urls,
-		       v.created_at, v.updated_at, u.role as user_role,
-		       GREATEST(
-		         similarity(v.caption, $1),
-		         similarity(v.user_name, $1)
-		       ) as relevance,
-		       CASE 
-		         WHEN similarity(v.caption, $1) > similarity(v.user_name, $1) THEN 'caption'
-		         ELSE 'username'
-		       END as match_type
-		FROM videos v
-		JOIN users u ON v.user_id = u.uid
-		WHERE v.is_active = true AND u.is_active = true
-		  AND (v.caption % $1 OR v.user_name % $1)`
-
-	args := []interface{}{query}
-	finalQuery, args := s.applySearchFilters(baseQuery, filters, args)
-	finalQuery += fmt.Sprintf(" ORDER BY relevance DESC, v.created_at DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
-	args = append(args, limit, offset)
-
-	return s.executeSearchQuery(ctx, finalQuery, args)
-}
-
-// Full-text search with PostgreSQL's text search
-func (s *VideoService) searchFullText(ctx context.Context, query string, filters models.SearchFilters, limit, offset int) ([]models.SearchResult, error) {
-	baseQuery := `
-		SELECT v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
-		       v.caption, v.price, v.likes_count, v.comments_count, v.views_count, v.shares_count,
-		       v.tags, v.is_active, v.is_featured, v.is_verified, v.is_multiple_images, v.image_urls,
-		       v.created_at, v.updated_at, u.role as user_role,
-		       ts_rank(to_tsvector('english', v.caption || ' ' || v.user_name), plainto_tsquery('english', $1)) as relevance,
-		       'fulltext' as match_type
-		FROM videos v
-		JOIN users u ON v.user_id = u.uid
-		WHERE v.is_active = true AND u.is_active = true
-		  AND to_tsvector('english', v.caption || ' ' || v.user_name) @@ plainto_tsquery('english', $1)`
-
-	args := []interface{}{query}
-	finalQuery, args := s.applySearchFilters(baseQuery, filters, args)
-	finalQuery += fmt.Sprintf(" ORDER BY relevance DESC, v.created_at DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
-	args = append(args, limit, offset)
-
-	return s.executeSearchQuery(ctx, finalQuery, args)
-}
-
-// Combined search using multiple strategies
-func (s *VideoService) searchCombined(ctx context.Context, query string, filters models.SearchFilters, limit, offset int) ([]models.SearchResult, error) {
-	// Try exact search first (fastest)
-	exactResults, err := s.searchExact(ctx, query, filters, limit/2, 0)
-	if err != nil {
-		return nil, err
-	}
-
-	// If we have enough exact results, return them
-	if len(exactResults) >= limit {
-		return exactResults[:limit], nil
-	}
-
-	// Otherwise, combine with fuzzy search
-	fuzzyResults, err := s.searchFuzzy(ctx, query, filters, limit-len(exactResults), 0)
-	if err != nil {
-		return nil, err
-	}
-
-	// Merge and deduplicate results
-	combinedResults := s.mergeSearchResults(exactResults, fuzzyResults, limit)
-	return combinedResults, nil
-}
-
-// Apply search filters to query
-func (s *VideoService) applySearchFilters(baseQuery string, filters models.SearchFilters, args []interface{}) (string, []interface{}) {
-	argIndex := len(args) + 1
-
-	if filters.UserID != "" {
-		baseQuery += fmt.Sprintf(" AND v.user_id = $%d", argIndex)
-		args = append(args, filters.UserID)
-		argIndex++
-	}
-
-	if filters.MediaType != "" && filters.MediaType != "all" {
-		if filters.MediaType == "image" {
-			baseQuery += " AND v.is_multiple_images = true"
-		} else if filters.MediaType == "video" {
-			baseQuery += " AND v.is_multiple_images = false"
-		}
-	}
-
-	if filters.TimeRange != "" && filters.TimeRange != "all" {
-		var timeFilter string
-		switch filters.TimeRange {
-		case "day":
-			timeFilter = "v.created_at >= NOW() - INTERVAL '1 day'"
-		case "week":
-			timeFilter = "v.created_at >= NOW() - INTERVAL '1 week'"
-		case "month":
-			timeFilter = "v.created_at >= NOW() - INTERVAL '1 month'"
-		}
-		if timeFilter != "" {
-			baseQuery += " AND " + timeFilter
-		}
-	}
-
-	if filters.MinLikes > 0 {
-		baseQuery += fmt.Sprintf(" AND v.likes_count >= $%d", argIndex)
-		args = append(args, filters.MinLikes)
-		argIndex++
-	}
-
-	if filters.HasPrice != nil {
-		if *filters.HasPrice {
-			baseQuery += " AND v.price > 0"
-		} else {
-			baseQuery += " AND v.price = 0"
-		}
-	}
-
-	if filters.IsVerified != nil {
-		baseQuery += fmt.Sprintf(" AND v.is_verified = $%d", argIndex)
-		args = append(args, *filters.IsVerified)
-		argIndex++
-	}
-
-	return baseQuery, args
-}
-
-// Execute search query and return formatted results
-func (s *VideoService) executeSearchQuery(ctx context.Context, query string, args []interface{}) ([]models.SearchResult, error) {
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
+		log.Printf("Search query failed: %v", err)
+		return nil, 0, err
 	}
 	defer rows.Close()
 
-	var results []models.SearchResult
+	var videos []models.VideoResponse
 	for rows.Next() {
 		var video models.VideoResponse
-		var userRole models.UserRole
 		var relevance float64
-		var matchType string
 
 		err := rows.Scan(
 			&video.ID, &video.UserID, &video.UserName, &video.UserImage,
@@ -403,77 +196,175 @@ func (s *VideoService) executeSearchQuery(ctx context.Context, query string, arg
 			&video.LikesCount, &video.CommentsCount, &video.ViewsCount, &video.SharesCount,
 			&video.Tags, &video.IsActive, &video.IsFeatured, &video.IsVerified,
 			&video.IsMultipleImages, &video.ImageUrls, &video.CreatedAt, &video.UpdatedAt,
-			&userRole, &relevance, &matchType,
+			&relevance,
 		)
 		if err != nil {
-			return nil, err
+			log.Printf("Row scan error: %v", err)
+			continue
 		}
 
 		// Apply URL optimizations
 		s.applyURLOptimizations(&video)
 		video.UserProfileImage = video.UserImage
-		video.UserRole = userRole.String()
-		video.UserCanPost = userRole.CanPost()
 
-		results = append(results, models.SearchResult{
-			Video:     &video,
-			Relevance: relevance,
-			MatchType: matchType,
-		})
+		videos = append(videos, video)
 	}
 
-	return results, nil
+	if err = rows.Err(); err != nil {
+		log.Printf("Rows iteration error: %v", err)
+		return videos, len(videos), err
+	}
+
+	duration := time.Since(startTime).Milliseconds()
+	log.Printf("Fuzzy search completed: %d results in %dms", len(videos), duration)
+
+	return videos, len(videos), nil
 }
 
-// Merge and deduplicate search results
-func (s *VideoService) mergeSearchResults(results1, results2 []models.SearchResult, limit int) []models.SearchResult {
-	seen := make(map[string]bool)
-	var merged []models.SearchResult
+// ===============================
+// SEARCH HISTORY MANAGEMENT
+// ===============================
 
-	// Add results from first set
-	for _, result := range results1 {
-		if !seen[result.Video.ID] && len(merged) < limit {
-			seen[result.Video.ID] = true
-			merged = append(merged, result)
-		}
-	}
-
-	// Add results from second set
-	for _, result := range results2 {
-		if !seen[result.Video.ID] && len(merged) < limit {
-			seen[result.Video.ID] = true
-			merged = append(merged, result)
-		}
-	}
-
-	return merged
-}
-
-// Generate search suggestions for better UX
-func (s *VideoService) generateSearchSuggestions(query string) []string {
-	suggestions := []string{}
-
-	if len(query) > 2 {
-		// Generate some basic suggestions
-		suggestions = append(suggestions, query+" tutorial")
-		suggestions = append(suggestions, query+" tips")
-		suggestions = append(suggestions, "how to "+query)
-	}
-
-	return suggestions
-}
-
-// GetPopularSearchTerms for autocomplete
-func (s *VideoService) GetPopularSearchTerms(ctx context.Context, limit int) ([]string, error) {
+// GetSearchHistory retrieves user's search history
+func (s *VideoService) GetSearchHistory(ctx context.Context, userID string, limit int) ([]string, error) {
 	query := `
-		SELECT term 
+		SELECT DISTINCT query
+		FROM search_history
+		WHERE user_id = $1
+		ORDER BY created_at DESC
+		LIMIT $2`
+
+	rows, err := s.db.QueryContext(ctx, query, userID, limit)
+	if err != nil {
+		log.Printf("Failed to get search history: %v", err)
+		return []string{}, nil // Return empty array instead of error
+	}
+	defer rows.Close()
+
+	var history []string
+	for rows.Next() {
+		var query string
+		if err := rows.Scan(&query); err != nil {
+			continue
+		}
+		history = append(history, query)
+	}
+
+	log.Printf("Retrieved %d search history items for user %s", len(history), userID)
+	return history, nil
+}
+
+// AddSearchHistory adds a search query to user's history
+func (s *VideoService) AddSearchHistory(ctx context.Context, userID, query string) error {
+	cleanQuery := strings.TrimSpace(query)
+	if cleanQuery == "" {
+		return fmt.Errorf("query cannot be empty")
+	}
+
+	// Check if table exists, if not create it
+	_, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS search_history (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			user_id VARCHAR(255) NOT NULL,
+			query TEXT NOT NULL,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			CONSTRAINT fk_user FOREIGN KEY (user_id) REFERENCES users(uid) ON DELETE CASCADE
+		)`)
+	if err != nil {
+		log.Printf("Failed to create search_history table: %v", err)
+	}
+
+	// Create index if not exists
+	_, err = s.db.ExecContext(ctx, `
+		CREATE INDEX IF NOT EXISTS idx_search_history_user_id ON search_history(user_id, created_at DESC)`)
+	if err != nil {
+		log.Printf("Failed to create search_history index: %v", err)
+	}
+
+	// Remove duplicate if exists
+	_, err = s.db.ExecContext(ctx, `
+		DELETE FROM search_history 
+		WHERE user_id = $1 AND LOWER(query) = LOWER($2)`,
+		userID, cleanQuery)
+	if err != nil {
+		log.Printf("Warning: Failed to remove duplicate: %v", err)
+	}
+
+	// Insert new search
+	insertQuery := `
+		INSERT INTO search_history (user_id, query, created_at)
+		VALUES ($1, $2, $3)`
+
+	_, err = s.db.ExecContext(ctx, insertQuery, userID, cleanQuery, time.Now())
+	if err != nil {
+		log.Printf("Failed to add search history: %v", err)
+		return err
+	}
+
+	// Keep only last 50 searches per user
+	_, err = s.db.ExecContext(ctx, `
+		DELETE FROM search_history
+		WHERE id IN (
+			SELECT id FROM search_history
+			WHERE user_id = $1
+			ORDER BY created_at DESC
+			OFFSET 50
+		)`, userID)
+	if err != nil {
+		log.Printf("Warning: Failed to cleanup old history: %v", err)
+	}
+
+	log.Printf("Added search '%s' to history for user %s", cleanQuery, userID)
+	return nil
+}
+
+// ClearSearchHistory removes all search history for a user
+func (s *VideoService) ClearSearchHistory(ctx context.Context, userID string) error {
+	query := `DELETE FROM search_history WHERE user_id = $1`
+
+	result, err := s.db.ExecContext(ctx, query, userID)
+	if err != nil {
+		log.Printf("Failed to clear search history: %v", err)
+		return err
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	log.Printf("Cleared %d search history items for user %s", rowsAffected, userID)
+	return nil
+}
+
+// RemoveSearchHistory removes a specific search query from user's history
+func (s *VideoService) RemoveSearchHistory(ctx context.Context, userID, searchQuery string) error {
+	query := `DELETE FROM search_history WHERE user_id = $1 AND LOWER(query) = LOWER($2)`
+
+	result, err := s.db.ExecContext(ctx, query, userID, searchQuery)
+	if err != nil {
+		log.Printf("Failed to remove search history: %v", err)
+		return err
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	log.Printf("Removed %d search history item(s) for user %s", rowsAffected, userID)
+	return nil
+}
+
+// ===============================
+// POPULAR SEARCH TERMS
+// ===============================
+
+func (s *VideoService) GetPopularSearchTerms(ctx context.Context, limit int) ([]string, error) {
+	// Try to get from materialized view first
+	query := `
+		SELECT word 
 		FROM popular_search_terms 
 		ORDER BY frequency DESC 
 		LIMIT $1`
 
 	rows, err := s.db.QueryContext(ctx, query, limit)
 	if err != nil {
-		return nil, err
+		log.Printf("Materialized view not available, using fallback: %v", err)
+		// Fallback to real-time query
+		return s.getPopularSearchTermsFallback(ctx, limit)
 	}
 	defer rows.Close()
 
@@ -486,86 +377,58 @@ func (s *VideoService) GetPopularSearchTerms(ctx context.Context, limit int) ([]
 		terms = append(terms, term)
 	}
 
+	log.Printf("Retrieved %d popular search terms", len(terms))
 	return terms, nil
 }
 
-// GetSearchSuggestions for real-time autocomplete
-func (s *VideoService) GetSearchSuggestions(ctx context.Context, query string, limit int) ([]string, error) {
-	// Quick prefix search on captions and usernames
-	sqlQuery := `
-		SELECT DISTINCT 
-		  CASE 
-		    WHEN LOWER(caption) LIKE LOWER($1) THEN caption
-		    WHEN LOWER(user_name) LIKE LOWER($1) THEN user_name
-		  END as suggestion
-		FROM videos 
-		WHERE is_active = true 
-		  AND (LOWER(caption) LIKE LOWER($1) OR LOWER(user_name) LIKE LOWER($1))
-		  AND LENGTH(CASE 
-		    WHEN LOWER(caption) LIKE LOWER($1) THEN caption
-		    WHEN LOWER(user_name) LIKE LOWER($1) THEN user_name
-		  END) > 0
-		ORDER BY suggestion
-		LIMIT $2`
+// Fallback method for popular terms
+func (s *VideoService) getPopularSearchTermsFallback(ctx context.Context, limit int) ([]string, error) {
+	// Get most common words from recent searches
+	query := `
+		SELECT query, COUNT(*) as frequency
+		FROM search_history
+		WHERE created_at >= NOW() - INTERVAL '7 days'
+		GROUP BY query
+		ORDER BY frequency DESC
+		LIMIT $1`
 
-	rows, err := s.db.QueryContext(ctx, sqlQuery, query+"%", limit)
+	rows, err := s.db.QueryContext(ctx, query, limit)
 	if err != nil {
-		return nil, err
+		log.Printf("Fallback popular terms query failed: %v", err)
+		return []string{}, nil
 	}
 	defer rows.Close()
 
-	var suggestions []string
+	var terms []string
 	for rows.Next() {
-		var suggestion string
-		if err := rows.Scan(&suggestion); err != nil {
+		var term string
+		var frequency int
+		if err := rows.Scan(&term, &frequency); err != nil {
 			continue
 		}
-		if suggestion != "" {
-			suggestions = append(suggestions, suggestion)
-		}
+		terms = append(terms, term)
 	}
 
-	return suggestions, nil
+	return terms, nil
 }
 
 // ===============================
-// 🔧 UPDATED: OPTIMIZED VIDEO CRUD OPERATIONS WITH PRICE AND VERIFICATION
+// OPTIMIZED VIDEO CRUD OPERATIONS
 // ===============================
 
-// 🚀 UPDATED: GetVideosOptimized with price and verification fields
 func (s *VideoService) GetVideosOptimized(ctx context.Context, params models.VideoSearchParams) ([]models.VideoResponse, error) {
-	// 🔧 UPDATED: Query now includes price and is_verified fields
 	query := `
 		SELECT 
-			v.id,
-			v.user_id,
-			v.user_name,
-			v.user_image,
-			v.video_url,
-			v.thumbnail_url,
-			v.caption,
-			v.price,
-			v.likes_count,
-			v.comments_count,
-			v.views_count,
-			v.shares_count,
-			v.tags,
-			v.is_active,
-			v.is_featured,
-			v.is_verified,
-			v.is_multiple_images,
-			v.image_urls,
-			v.created_at,
-			v.updated_at,
-			u.role as user_role
+			v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
+			v.caption, v.price, v.likes_count, v.comments_count, v.views_count, v.shares_count,
+			v.tags, v.is_active, v.is_featured, v.is_verified, v.is_multiple_images, v.image_urls,
+			v.created_at, v.updated_at
 		FROM videos v
-		JOIN users u ON v.user_id = u.uid
-		WHERE v.is_active = true AND u.is_active = true`
+		WHERE v.is_active = true`
 
 	args := []interface{}{}
 	argIndex := 1
 
-	// Add filters with optimized conditions
 	if params.UserID != "" {
 		query += fmt.Sprintf(" AND v.user_id = $%d", argIndex)
 		args = append(args, params.UserID)
@@ -587,26 +450,17 @@ func (s *VideoService) GetVideosOptimized(ctx context.Context, params models.Vid
 	}
 
 	if params.Query != "" {
-		// Optimized full-text search with better performance
 		query += fmt.Sprintf(" AND (v.caption ILIKE $%d OR v.user_name ILIKE $%d)", argIndex, argIndex)
 		searchPattern := "%" + params.Query + "%"
 		args = append(args, searchPattern)
 		argIndex++
 	}
 
-	// 🆕 NEW: Filter by role if specified
-	if params.Role != nil {
-		query += fmt.Sprintf(" AND u.role = $%d", argIndex)
-		args = append(args, *params.Role)
-		argIndex++
-	}
-
-	// Optimized sorting with better performance
+	// Sorting
 	switch params.SortBy {
 	case "popular":
 		query += " ORDER BY v.likes_count DESC, v.views_count DESC, v.created_at DESC"
 	case "trending":
-		// Improved trending algorithm with time decay
 		query += ` ORDER BY (
 			CASE 
 				WHEN EXTRACT(EPOCH FROM (NOW() - v.created_at)) > 0 THEN
@@ -619,11 +473,10 @@ func (s *VideoService) GetVideosOptimized(ctx context.Context, params models.Vid
 		query += " ORDER BY v.views_count DESC, v.created_at DESC"
 	case "likes":
 		query += " ORDER BY v.likes_count DESC, v.created_at DESC"
-	default: // "latest"
+	default:
 		query += " ORDER BY v.created_at DESC"
 	}
 
-	// Add pagination with limits
 	if params.Limit <= 0 {
 		params.Limit = 20
 	}
@@ -643,47 +496,22 @@ func (s *VideoService) GetVideosOptimized(ctx context.Context, params models.Vid
 	var videos []models.VideoResponse
 	for rows.Next() {
 		var video models.VideoResponse
-		var userRole models.UserRole
 
-		// 🔧 UPDATED: Added price and is_verified to scan
 		err := rows.Scan(
-			&video.ID,
-			&video.UserID,
-			&video.UserName,
-			&video.UserImage,
-			&video.VideoURL,
-			&video.ThumbnailURL,
-			&video.Caption,
-			&video.Price,
-			&video.LikesCount,
-			&video.CommentsCount,
-			&video.ViewsCount,
-			&video.SharesCount,
-			&video.Tags,
-			&video.IsActive,
-			&video.IsFeatured,
-			&video.IsVerified,
-			&video.IsMultipleImages,
-			&video.ImageUrls,
-			&video.CreatedAt,
-			&video.UpdatedAt,
-			&userRole,
+			&video.ID, &video.UserID, &video.UserName, &video.UserImage,
+			&video.VideoURL, &video.ThumbnailURL, &video.Caption, &video.Price,
+			&video.LikesCount, &video.CommentsCount, &video.ViewsCount, &video.SharesCount,
+			&video.Tags, &video.IsActive, &video.IsFeatured, &video.IsVerified,
+			&video.IsMultipleImages, &video.ImageUrls, &video.CreatedAt, &video.UpdatedAt,
 		)
 		if err != nil {
 			return nil, err
 		}
 
-		// Apply URL optimizations
 		s.applyURLOptimizations(&video)
-
-		// Set additional fields
 		video.UserProfileImage = video.UserImage
-		video.IsLiked = false     // Will be set by handler if user is authenticated
-		video.IsFollowing = false // Will be set by handler if user is authenticated
-
-		// 🆕 NEW: Add role information to response
-		video.UserRole = userRole.String()
-		video.UserCanPost = userRole.CanPost()
+		video.IsLiked = false
+		video.IsFollowing = false
 
 		videos = append(videos, video)
 	}
@@ -691,22 +519,19 @@ func (s *VideoService) GetVideosOptimized(ctx context.Context, params models.Vid
 	return videos, nil
 }
 
-// 🚀 UPDATED: Bulk video fetching with price and verification
 func (s *VideoService) GetVideosBulk(ctx context.Context, videoIDs []string, includeInactive bool) ([]models.VideoResponse, error) {
 	if len(videoIDs) == 0 {
 		return []models.VideoResponse{}, nil
 	}
 
-	// 🔧 UPDATED: Query includes price and is_verified fields
 	query := `
 		SELECT 
 			v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
 			v.caption, v.price, v.likes_count, v.comments_count, v.views_count, v.shares_count,
 			v.tags, v.is_active, v.is_featured, v.is_verified, v.is_multiple_images, v.image_urls,
-			v.created_at, v.updated_at, u.role as user_role
+			v.created_at, v.updated_at
 		FROM videos v
-		JOIN users u ON v.user_id = u.uid
-		WHERE v.id = ANY($1::text[]) AND u.is_active = true`
+		WHERE v.id = ANY($1::text[])`
 
 	if !includeInactive {
 		query += " AND v.is_active = true"
@@ -714,7 +539,6 @@ func (s *VideoService) GetVideosBulk(ctx context.Context, videoIDs []string, inc
 
 	query += " ORDER BY v.created_at DESC"
 
-	// Convert string slice to PostgreSQL array format
 	rows, err := s.db.QueryContext(ctx, query, videoIDs)
 	if err != nil {
 		return nil, err
@@ -724,27 +548,20 @@ func (s *VideoService) GetVideosBulk(ctx context.Context, videoIDs []string, inc
 	var videos []models.VideoResponse
 	for rows.Next() {
 		var video models.VideoResponse
-		var userRole models.UserRole
 
-		// 🔧 UPDATED: Added price and is_verified to scan
 		err := rows.Scan(
 			&video.ID, &video.UserID, &video.UserName, &video.UserImage,
 			&video.VideoURL, &video.ThumbnailURL, &video.Caption, &video.Price,
 			&video.LikesCount, &video.CommentsCount, &video.ViewsCount, &video.SharesCount,
 			&video.Tags, &video.IsActive, &video.IsFeatured, &video.IsVerified,
-			&video.IsMultipleImages, &video.ImageUrls, &video.CreatedAt, &video.UpdatedAt, &userRole,
+			&video.IsMultipleImages, &video.ImageUrls, &video.CreatedAt, &video.UpdatedAt,
 		)
 		if err != nil {
 			return nil, err
 		}
 
-		// Apply URL optimizations
 		s.applyURLOptimizations(&video)
 		video.UserProfileImage = video.UserImage
-
-		// 🆕 NEW: Add role information
-		video.UserRole = userRole.String()
-		video.UserCanPost = userRole.CanPost()
 
 		videos = append(videos, video)
 	}
@@ -752,18 +569,15 @@ func (s *VideoService) GetVideosBulk(ctx context.Context, videoIDs []string, inc
 	return videos, nil
 }
 
-// 🚀 UPDATED: GetFeaturedVideosOptimized with price and verification
 func (s *VideoService) GetFeaturedVideosOptimized(ctx context.Context, limit int) ([]models.VideoResponse, error) {
-	// 🔧 UPDATED: Query includes price and is_verified fields
 	query := `
 		SELECT 
 			v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
 			v.caption, v.price, v.likes_count, v.comments_count, v.views_count, v.shares_count,
 			v.tags, v.is_active, v.is_featured, v.is_verified, v.is_multiple_images, v.image_urls,
-			v.created_at, v.updated_at, u.role as user_role
+			v.created_at, v.updated_at
 		FROM videos v
-		JOIN users u ON v.user_id = u.uid
-		WHERE v.is_active = true AND v.is_featured = true AND u.is_active = true
+		WHERE v.is_active = true AND v.is_featured = true
 		ORDER BY v.created_at DESC 
 		LIMIT $1`
 
@@ -776,27 +590,20 @@ func (s *VideoService) GetFeaturedVideosOptimized(ctx context.Context, limit int
 	var videos []models.VideoResponse
 	for rows.Next() {
 		var video models.VideoResponse
-		var userRole models.UserRole
 
-		// 🔧 UPDATED: Added price and is_verified to scan
 		err := rows.Scan(
 			&video.ID, &video.UserID, &video.UserName, &video.UserImage,
 			&video.VideoURL, &video.ThumbnailURL, &video.Caption, &video.Price,
 			&video.LikesCount, &video.CommentsCount, &video.ViewsCount, &video.SharesCount,
 			&video.Tags, &video.IsActive, &video.IsFeatured, &video.IsVerified,
-			&video.IsMultipleImages, &video.ImageUrls, &video.CreatedAt, &video.UpdatedAt, &userRole,
+			&video.IsMultipleImages, &video.ImageUrls, &video.CreatedAt, &video.UpdatedAt,
 		)
 		if err != nil {
 			return nil, err
 		}
 
-		// Apply URL optimizations
 		s.applyURLOptimizations(&video)
 		video.UserProfileImage = video.UserImage
-
-		// 🆕 NEW: Add role information
-		video.UserRole = userRole.String()
-		video.UserCanPost = userRole.CanPost()
 
 		videos = append(videos, video)
 	}
@@ -804,15 +611,13 @@ func (s *VideoService) GetFeaturedVideosOptimized(ctx context.Context, limit int
 	return videos, nil
 }
 
-// 🚀 UPDATED: GetTrendingVideosOptimized with price and verification
 func (s *VideoService) GetTrendingVideosOptimized(ctx context.Context, limit int) ([]models.VideoResponse, error) {
-	// 🔧 UPDATED: Query includes price and is_verified fields
 	query := `
 		SELECT 
 			v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
 			v.caption, v.price, v.likes_count, v.comments_count, v.views_count, v.shares_count,
 			v.tags, v.is_active, v.is_featured, v.is_verified, v.is_multiple_images, v.image_urls,
-			v.created_at, v.updated_at, u.role as user_role,
+			v.created_at, v.updated_at,
 			CASE 
 				WHEN EXTRACT(EPOCH FROM (NOW() - v.created_at)) > 0 THEN
 					(v.likes_count * 2.5 + v.comments_count * 3.5 + v.shares_count * 5.0 + v.views_count * 0.1) 
@@ -820,8 +625,7 @@ func (s *VideoService) GetTrendingVideosOptimized(ctx context.Context, limit int
 				ELSE v.likes_count * 2.5 + v.comments_count * 3.5 + v.shares_count * 5.0 
 			END as trending_score
 		FROM videos v
-		JOIN users u ON v.user_id = u.uid
-		WHERE v.is_active = true AND u.is_active = true
+		WHERE v.is_active = true
 		ORDER BY trending_score DESC, v.created_at DESC 
 		LIMIT $1`
 
@@ -834,29 +638,22 @@ func (s *VideoService) GetTrendingVideosOptimized(ctx context.Context, limit int
 	var videos []models.VideoResponse
 	for rows.Next() {
 		var video models.VideoResponse
-		var userRole models.UserRole
-		var trendingScore float64 // We select but don't need to return this
+		var trendingScore float64
 
-		// 🔧 UPDATED: Added price and is_verified to scan
 		err := rows.Scan(
 			&video.ID, &video.UserID, &video.UserName, &video.UserImage,
 			&video.VideoURL, &video.ThumbnailURL, &video.Caption, &video.Price,
 			&video.LikesCount, &video.CommentsCount, &video.ViewsCount, &video.SharesCount,
 			&video.Tags, &video.IsActive, &video.IsFeatured, &video.IsVerified,
 			&video.IsMultipleImages, &video.ImageUrls, &video.CreatedAt, &video.UpdatedAt,
-			&userRole, &trendingScore,
+			&trendingScore,
 		)
 		if err != nil {
 			return nil, err
 		}
 
-		// Apply URL optimizations
 		s.applyURLOptimizations(&video)
 		video.UserProfileImage = video.UserImage
-
-		// 🆕 NEW: Add role information
-		video.UserRole = userRole.String()
-		video.UserCanPost = userRole.CanPost()
 
 		videos = append(videos, video)
 	}
@@ -864,65 +661,51 @@ func (s *VideoService) GetTrendingVideosOptimized(ctx context.Context, limit int
 	return videos, nil
 }
 
-// 🚀 UPDATED: GetVideoOptimized with price and verification
 func (s *VideoService) GetVideoOptimized(ctx context.Context, videoID string) (*models.VideoResponse, error) {
-	// 🔧 UPDATED: Query includes price and is_verified fields
 	query := `
 		SELECT 
 			v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
 			v.caption, v.price, v.likes_count, v.comments_count, v.views_count, v.shares_count,
 			v.tags, v.is_active, v.is_featured, v.is_verified, v.is_multiple_images, v.image_urls,
-			v.created_at, v.updated_at, u.role as user_role
+			v.created_at, v.updated_at
 		FROM videos v
-		JOIN users u ON v.user_id = u.uid
-		WHERE v.id = $1 AND v.is_active = true AND u.is_active = true`
+		WHERE v.id = $1 AND v.is_active = true`
 
 	var video models.VideoResponse
-	var userRole models.UserRole
 
-	// 🔧 UPDATED: Added price and is_verified to scan
 	err := s.db.QueryRowContext(ctx, query, videoID).Scan(
 		&video.ID, &video.UserID, &video.UserName, &video.UserImage,
 		&video.VideoURL, &video.ThumbnailURL, &video.Caption, &video.Price,
 		&video.LikesCount, &video.CommentsCount, &video.ViewsCount, &video.SharesCount,
 		&video.Tags, &video.IsActive, &video.IsFeatured, &video.IsVerified,
-		&video.IsMultipleImages, &video.ImageUrls, &video.CreatedAt, &video.UpdatedAt, &userRole,
+		&video.IsMultipleImages, &video.ImageUrls, &video.CreatedAt, &video.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	// Apply URL optimizations
 	s.applyURLOptimizations(&video)
 	video.UserProfileImage = video.UserImage
 
-	// 🆕 NEW: Add role information
-	video.UserRole = userRole.String()
-	video.UserCanPost = userRole.CanPost()
-
-	// 🚀 OPTIMIZED: Async view increment with better performance
+	// Async view increment
 	go func() {
 		s.incrementViewCountOptimized(videoID)
 	}()
 
-	// Increment view count for immediate display
 	video.ViewsCount++
 
 	return &video, nil
 }
 
-// 🚀 UPDATED: GetUserVideosOptimized with price and verification
 func (s *VideoService) GetUserVideosOptimized(ctx context.Context, userID string, limit, offset int) ([]models.VideoResponse, error) {
-	// 🔧 UPDATED: Query includes price and is_verified fields
 	query := `
 		SELECT 
 			v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
 			v.caption, v.price, v.likes_count, v.comments_count, v.views_count, v.shares_count,
 			v.tags, v.is_active, v.is_featured, v.is_verified, v.is_multiple_images, v.image_urls,
-			v.created_at, v.updated_at, u.role as user_role
+			v.created_at, v.updated_at
 		FROM videos v
-		JOIN users u ON v.user_id = u.uid
-		WHERE v.user_id = $1 AND v.is_active = true AND u.is_active = true
+		WHERE v.user_id = $1 AND v.is_active = true
 		ORDER BY v.created_at DESC 
 		LIMIT $2 OFFSET $3`
 
@@ -935,27 +718,20 @@ func (s *VideoService) GetUserVideosOptimized(ctx context.Context, userID string
 	var videos []models.VideoResponse
 	for rows.Next() {
 		var video models.VideoResponse
-		var userRole models.UserRole
 
-		// 🔧 UPDATED: Added price and is_verified to scan
 		err := rows.Scan(
 			&video.ID, &video.UserID, &video.UserName, &video.UserImage,
 			&video.VideoURL, &video.ThumbnailURL, &video.Caption, &video.Price,
 			&video.LikesCount, &video.CommentsCount, &video.ViewsCount, &video.SharesCount,
 			&video.Tags, &video.IsActive, &video.IsFeatured, &video.IsVerified,
-			&video.IsMultipleImages, &video.ImageUrls, &video.CreatedAt, &video.UpdatedAt, &userRole,
+			&video.IsMultipleImages, &video.ImageUrls, &video.CreatedAt, &video.UpdatedAt,
 		)
 		if err != nil {
 			return nil, err
 		}
 
-		// Apply URL optimizations
 		s.applyURLOptimizations(&video)
 		video.UserProfileImage = video.UserImage
-
-		// 🆕 NEW: Add role information
-		video.UserRole = userRole.String()
-		video.UserCanPost = userRole.CanPost()
 
 		videos = append(videos, video)
 	}
@@ -963,18 +739,15 @@ func (s *VideoService) GetUserVideosOptimized(ctx context.Context, userID string
 	return videos, nil
 }
 
-// 🚀 UPDATED: GetUserLikedVideosOptimized with price and verification
 func (s *VideoService) GetUserLikedVideosOptimized(ctx context.Context, userID string, limit, offset int) ([]models.VideoResponse, error) {
-	// 🔧 UPDATED: Query includes price and is_verified fields
 	query := `
 		SELECT v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
 		       v.caption, v.price, v.likes_count, v.comments_count, v.views_count, v.shares_count,
 		       v.tags, v.is_active, v.is_featured, v.is_verified, v.is_multiple_images, v.image_urls,
-		       v.created_at, v.updated_at, u.role as user_role
+		       v.created_at, v.updated_at
 		FROM videos v
 		JOIN video_likes vl ON v.id = vl.video_id
-		JOIN users u ON v.user_id = u.uid
-		WHERE vl.user_id = $1 AND v.is_active = true AND u.is_active = true
+		WHERE vl.user_id = $1 AND v.is_active = true
 		ORDER BY vl.created_at DESC
 		LIMIT $2 OFFSET $3`
 
@@ -987,28 +760,21 @@ func (s *VideoService) GetUserLikedVideosOptimized(ctx context.Context, userID s
 	var videos []models.VideoResponse
 	for rows.Next() {
 		var video models.VideoResponse
-		var userRole models.UserRole
 
-		// 🔧 UPDATED: Added price and is_verified to scan
 		err := rows.Scan(
 			&video.ID, &video.UserID, &video.UserName, &video.UserImage,
 			&video.VideoURL, &video.ThumbnailURL, &video.Caption, &video.Price,
 			&video.LikesCount, &video.CommentsCount, &video.ViewsCount, &video.SharesCount,
 			&video.Tags, &video.IsActive, &video.IsFeatured, &video.IsVerified,
-			&video.IsMultipleImages, &video.ImageUrls, &video.CreatedAt, &video.UpdatedAt, &userRole,
+			&video.IsMultipleImages, &video.ImageUrls, &video.CreatedAt, &video.UpdatedAt,
 		)
 		if err != nil {
 			return nil, err
 		}
 
-		// Apply URL optimizations
 		s.applyURLOptimizations(&video)
 		video.UserProfileImage = video.UserImage
-		video.IsLiked = true // These are liked videos
-
-		// 🆕 NEW: Add role information
-		video.UserRole = userRole.String()
-		video.UserCanPost = userRole.CanPost()
+		video.IsLiked = true
 
 		videos = append(videos, video)
 	}
@@ -1016,21 +782,17 @@ func (s *VideoService) GetUserLikedVideosOptimized(ctx context.Context, userID s
 	return videos, nil
 }
 
-// 🚀 UPDATED: CreateVideoOptimized with price field support
 func (s *VideoService) CreateVideoOptimized(ctx context.Context, video *models.Video) (string, error) {
-	// 🆕 NEW: Validate user can create videos based on role
 	user, err := s.ValidateUserCanCreateVideo(ctx, video.UserID)
 	if err != nil {
 		return "", fmt.Errorf("video creation validation failed: %w", err)
 	}
 
-	// Enhanced validation
 	if !video.IsValidForCreation() {
 		errors := video.ValidateForCreation()
 		return "", fmt.Errorf("validation failed: %v", errors)
 	}
 
-	// Set metadata
 	video.ID = uuid.New().String()
 	video.CreatedAt = time.Now()
 	video.UpdatedAt = time.Now()
@@ -1040,28 +802,22 @@ func (s *VideoService) CreateVideoOptimized(ctx context.Context, video *models.V
 	video.ViewsCount = 0
 	video.SharesCount = 0
 
-	// 🔧 SIMPLE: Default values for new fields
 	if video.Price < 0 {
 		video.Price = 0
 	}
-	// IsVerified defaults to false (set by admin later)
 
-	// Ensure user info is from validated user
 	video.UserName = user.Name
 	video.UserImage = user.ProfileImage
 
-	// Optimize URLs before storing
 	video.VideoURL = s.optimizeVideoURL(video.VideoURL)
 	video.ThumbnailURL = s.optimizeThumbnailURL(video.ThumbnailURL)
 
-	// Start transaction for consistent data
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to start transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	// 🔧 UPDATED: Insert query includes price and is_verified fields
 	query := `
 		INSERT INTO videos (
 			id, user_id, user_name, user_image, video_url, thumbnail_url,
@@ -1080,8 +836,6 @@ func (s *VideoService) CreateVideoOptimized(ctx context.Context, video *models.V
 		return "", fmt.Errorf("failed to insert video: %w", err)
 	}
 
-	// Update user's last post timestamp and video count (handled by database trigger)
-	// But we can also update it manually for immediate consistency
 	_, err = tx.ExecContext(ctx, `
 		UPDATE users 
 		SET last_post_at = $1, updated_at = $1 
@@ -1099,16 +853,14 @@ func (s *VideoService) CreateVideoOptimized(ctx context.Context, video *models.V
 }
 
 // ===============================
-// OPTIMIZED VIDEO INTERACTION OPERATIONS
+// VIDEO INTERACTION OPERATIONS
 // ===============================
 
-// 🚀 OPTIMIZED: Enhanced view count increment with batching
 func (s *VideoService) incrementViewCountOptimized(videoID string) {
 	maxRetries := 3
 	for i := 0; i < maxRetries; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 
-		// Optimized query with RETURNING clause for better performance
 		query := `
 			UPDATE videos 
 			SET views_count = views_count + 1, updated_at = $1 
@@ -1120,28 +872,21 @@ func (s *VideoService) incrementViewCountOptimized(videoID string) {
 		cancel()
 
 		if err == nil {
-			// Success - could potentially cache the new count here
 			return
 		}
 
-		// Exponential backoff
 		time.Sleep(time.Duration(i+1) * 500 * time.Millisecond)
 	}
 
-	// Log failure after all retries
-	fmt.Printf("Warning: Failed to increment view count for video %s after %d retries\n", videoID, maxRetries)
+	log.Printf("Failed to increment view count for video %s after %d retries", videoID, maxRetries)
 }
 
-// 🚀 OPTIMIZED: IncrementVideoViews with better error handling
 func (s *VideoService) IncrementVideoViews(ctx context.Context, videoID string) error {
-	// Use optimized async increment
 	go s.incrementViewCountOptimized(videoID)
-	return nil // Always return success for view counts to not break user experience
+	return nil
 }
 
-// 🚀 OPTIMIZED: LikeVideo with optimized database operations
 func (s *VideoService) LikeVideo(ctx context.Context, videoID, userID string) error {
-	// Check if already liked with optimized query
 	var exists int
 	err := s.db.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM video_likes WHERE video_id = $1 AND user_id = $2",
@@ -1153,14 +898,12 @@ func (s *VideoService) LikeVideo(ctx context.Context, videoID, userID string) er
 		return errors.New("already_liked")
 	}
 
-	// Add like - database trigger will auto-update the count
 	_, err = s.db.ExecContext(ctx,
 		"INSERT INTO video_likes (id, video_id, user_id, created_at) VALUES ($1, $2, $3, $4)",
 		uuid.New().String(), videoID, userID, time.Now())
 	return err
 }
 
-// 🚀 OPTIMIZED: UnlikeVideo with optimized database operations
 func (s *VideoService) UnlikeVideo(ctx context.Context, videoID, userID string) error {
 	result, err := s.db.ExecContext(ctx,
 		"DELETE FROM video_likes WHERE video_id = $1 AND user_id = $2",
@@ -1181,7 +924,6 @@ func (s *VideoService) UnlikeVideo(ctx context.Context, videoID, userID string) 
 	return nil
 }
 
-// 🚀 OPTIMIZED: GetVideoCountsSummary with better performance
 func (s *VideoService) GetVideoCountsSummary(ctx context.Context, videoID string) (*models.VideoCountsSummary, error) {
 	query := `
 		SELECT 
@@ -1202,13 +944,7 @@ func (s *VideoService) GetVideoCountsSummary(ctx context.Context, videoID string
 	return &summary, err
 }
 
-// ===============================
-// OPTIMIZED BATCH OPERATIONS
-// ===============================
-
-// 🚀 OPTIMIZED: Batch update counts with better performance
 func (s *VideoService) BatchUpdateViewCounts(ctx context.Context) error {
-	// More efficient batch update using CTEs
 	query := `
 		WITH updated_counts AS (
 			UPDATE videos SET 
@@ -1234,22 +970,16 @@ func (s *VideoService) BatchUpdateViewCounts(ctx context.Context) error {
 		return err
 	}
 
-	fmt.Printf("Updated counts for %d videos\n", updatedCount)
+	log.Printf("Updated counts for %d videos", updatedCount)
 	return nil
 }
-
-// ===============================
-// PRESERVED METHODS WITH SIMPLE UPDATES
-// ===============================
 
 func (s *VideoService) UpdateVideo(ctx context.Context, video *models.Video) error {
 	video.UpdatedAt = time.Now()
 
-	// Optimize URLs before updating
 	video.VideoURL = s.optimizeVideoURL(video.VideoURL)
 	video.ThumbnailURL = s.optimizeThumbnailURL(video.ThumbnailURL)
 
-	// 🔧 UPDATED: Include price and is_verified in update
 	query := `
 		UPDATE videos SET 
 			caption = :caption,
@@ -1287,7 +1017,6 @@ func (s *VideoService) DeleteVideo(ctx context.Context, videoID, userID string) 
 	}
 	defer tx.Rollback()
 
-	// Check if video exists and user owns it
 	var exists int
 	err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM videos WHERE id = $1 AND user_id = $2", videoID, userID).Scan(&exists)
 	if err != nil {
@@ -1297,7 +1026,6 @@ func (s *VideoService) DeleteVideo(ctx context.Context, videoID, userID string) 
 		return errors.New("video_not_found_or_no_access")
 	}
 
-	// Delete in optimized order
 	queries := []string{
 		"DELETE FROM video_likes WHERE video_id = $1",
 		"DELETE FROM comment_likes WHERE comment_id IN (SELECT id FROM comments WHERE video_id = $1)",
@@ -1332,7 +1060,7 @@ func (s *VideoService) IncrementVideoShares(ctx context.Context, videoID string)
 }
 
 // ===============================
-// PRESERVED COMMENT OPERATIONS
+// COMMENT OPERATIONS
 // ===============================
 
 func (s *VideoService) CreateComment(ctx context.Context, comment *models.Comment) (string, error) {
@@ -1386,7 +1114,6 @@ func (s *VideoService) DeleteComment(ctx context.Context, commentID, userID stri
 		if err != nil {
 			return err
 		}
-		// 🆕 UPDATED: Check both old user_type and new role system
 		if userType != "admin" && userType != "moderator" && userRole != models.UserRoleAdmin {
 			return errors.New("access_denied")
 		}
@@ -1448,7 +1175,7 @@ func (s *VideoService) UnlikeComment(ctx context.Context, commentID, userID stri
 }
 
 // ===============================
-// PRESERVED SOCIAL OPERATIONS WITH ROLE AWARENESS
+// SOCIAL OPERATIONS
 // ===============================
 
 func (s *VideoService) FollowUser(ctx context.Context, followerID, followingID string) error {
@@ -1494,7 +1221,6 @@ func (s *VideoService) CheckUserFollowing(ctx context.Context, followerID, follo
 	return count > 0, err
 }
 
-// 🚀 UPDATED: GetUserFollowers with role information
 func (s *VideoService) GetUserFollowers(ctx context.Context, userID string, limit, offset int) ([]models.User, error) {
 	query := `
 		SELECT u.uid, u.name, u.phone_number, u.whatsapp_number, u.profile_image, u.cover_image, u.bio,
@@ -1512,7 +1238,6 @@ func (s *VideoService) GetUserFollowers(ctx context.Context, userID string, limi
 	return users, err
 }
 
-// 🚀 UPDATED: GetUserFollowing with role information
 func (s *VideoService) GetUserFollowing(ctx context.Context, userID string, limit, offset int) ([]models.User, error) {
 	query := `
 		SELECT u.uid, u.name, u.phone_number, u.whatsapp_number, u.profile_image, u.cover_image, u.bio,
@@ -1530,18 +1255,15 @@ func (s *VideoService) GetUserFollowing(ctx context.Context, userID string, limi
 	return users, err
 }
 
-// 🚀 UPDATED: GetFollowingVideoFeed with price and verification
 func (s *VideoService) GetFollowingVideoFeed(ctx context.Context, userID string, limit, offset int) ([]models.VideoResponse, error) {
-	// 🔧 UPDATED: Query includes price and is_verified fields
 	query := `
 		SELECT v.id, v.user_id, v.user_name, v.user_image, v.video_url, v.thumbnail_url,
 		       v.caption, v.price, v.likes_count, v.comments_count, v.views_count, v.shares_count,
 		       v.tags, v.is_active, v.is_featured, v.is_verified, v.is_multiple_images, v.image_urls,
-		       v.created_at, v.updated_at, u.role as user_role
+		       v.created_at, v.updated_at
 		FROM videos v
 		JOIN user_follows uf ON v.user_id = uf.following_id
-		JOIN users u ON v.user_id = u.uid
-		WHERE uf.follower_id = $1 AND v.is_active = true AND u.is_active = true
+		WHERE uf.follower_id = $1 AND v.is_active = true
 		ORDER BY v.created_at DESC
 		LIMIT $2 OFFSET $3`
 
@@ -1554,28 +1276,21 @@ func (s *VideoService) GetFollowingVideoFeed(ctx context.Context, userID string,
 	var videos []models.VideoResponse
 	for rows.Next() {
 		var video models.VideoResponse
-		var userRole models.UserRole
 
-		// 🔧 UPDATED: Added price and is_verified to scan
 		err := rows.Scan(
 			&video.ID, &video.UserID, &video.UserName, &video.UserImage,
 			&video.VideoURL, &video.ThumbnailURL, &video.Caption, &video.Price,
 			&video.LikesCount, &video.CommentsCount, &video.ViewsCount, &video.SharesCount,
 			&video.Tags, &video.IsActive, &video.IsFeatured, &video.IsVerified,
-			&video.IsMultipleImages, &video.ImageUrls, &video.CreatedAt, &video.UpdatedAt, &userRole,
+			&video.IsMultipleImages, &video.ImageUrls, &video.CreatedAt, &video.UpdatedAt,
 		)
 		if err != nil {
 			return nil, err
 		}
 
-		// Apply URL optimizations
 		s.applyURLOptimizations(&video)
 		video.UserProfileImage = video.UserImage
-		video.IsFollowing = true // These are from followed users
-
-		// 🆕 NEW: Add role information
-		video.UserRole = userRole.String()
-		video.UserCanPost = userRole.CanPost()
+		video.IsFollowing = true
 
 		videos = append(videos, video)
 	}
@@ -1584,7 +1299,7 @@ func (s *VideoService) GetFollowingVideoFeed(ctx context.Context, userID string,
 }
 
 // ===============================
-// PRESERVED ADMIN OPERATIONS WITH OPTIMIZATIONS
+// ADMIN OPERATIONS
 // ===============================
 
 func (s *VideoService) ToggleFeatured(ctx context.Context, videoID string, isFeatured bool) error {
