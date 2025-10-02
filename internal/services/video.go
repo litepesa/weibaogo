@@ -818,6 +818,7 @@ func (s *VideoService) CreateVideoOptimized(ctx context.Context, video *models.V
 	}
 	defer tx.Rollback()
 
+	// 🔧 FIXED: Using positional parameters instead of named parameters
 	query := `
 		INSERT INTO videos (
 			id, user_id, user_name, user_image, video_url, thumbnail_url,
@@ -825,30 +826,82 @@ func (s *VideoService) CreateVideoOptimized(ctx context.Context, video *models.V
 			tags, is_active, is_featured, is_verified, is_multiple_images, image_urls,
 			created_at, updated_at
 		) VALUES (
-			:id, :user_id, :user_name, :user_image, :video_url, :thumbnail_url,
-			:caption, :price, :likes_count, :comments_count, :views_count, :shares_count,
-			:tags, :is_active, :is_featured, :is_verified, :is_multiple_images, :image_urls,
-			:created_at, :updated_at
+			$1, $2, $3, $4, $5, $6,
+			$7, $8, $9, $10, $11, $12,
+			$13, $14, $15, $16, $17, $18,
+			$19, $20
 		)`
 
-	_, err = tx.NamedExecContext(ctx, query, video)
+	log.Printf("🔍 ATTEMPTING VIDEO INSERT:")
+	log.Printf("   Video ID: %s", video.ID)
+	log.Printf("   User ID: %s", video.UserID)
+	log.Printf("   User Name: %s", video.UserName)
+	log.Printf("   Caption: %s", video.Caption)
+	log.Printf("   Price: %f", video.Price)
+	log.Printf("   Tags: %v (type: %T)", video.Tags, video.Tags)
+	log.Printf("   ImageUrls: %v (type: %T)", video.ImageUrls, video.ImageUrls)
+	log.Printf("   IsMultipleImages: %v", video.IsMultipleImages)
+	log.Printf("   VideoURL: %s", video.VideoURL)
+	log.Printf("   ThumbnailURL: %s", video.ThumbnailURL)
+
+	_, err = tx.ExecContext(ctx, query,
+		video.ID,
+		video.UserID,
+		video.UserName,
+		video.UserImage,
+		video.VideoURL,
+		video.ThumbnailURL,
+		video.Caption,
+		video.Price,
+		video.LikesCount,
+		video.CommentsCount,
+		video.ViewsCount,
+		video.SharesCount,
+		video.Tags,
+		video.IsActive,
+		video.IsFeatured,
+		video.IsVerified,
+		video.IsMultipleImages,
+		video.ImageUrls,
+		video.CreatedAt,
+		video.UpdatedAt,
+	)
 	if err != nil {
+		log.Printf("❌ DATABASE INSERT ERROR: %v", err)
+		log.Printf("❌ Error Type: %T", err)
+		log.Printf("❌ Full Error Details: %+v", err)
+		log.Printf("📄 FAILED Video ID: %s", video.ID)
+		log.Printf("📄 FAILED User ID: %s", video.UserID)
+		log.Printf("📄 FAILED Tags: %v (type: %T)", video.Tags, video.Tags)
+		log.Printf("📄 FAILED ImageUrls: %v (type: %T)", video.ImageUrls, video.ImageUrls)
+		log.Printf("📄 Full Video Data: %+v", video)
 		return "", fmt.Errorf("failed to insert video: %w", err)
 	}
 
+	log.Printf("✅ VIDEO INSERTED SUCCESSFULLY: %s", video.ID)
+
+	log.Printf("🔄 UPDATING USER LAST_POST_AT for user: %s", video.UserID)
+	updateTime := time.Now()
 	_, err = tx.ExecContext(ctx, `
 		UPDATE users 
-		SET last_post_at = $1, updated_at = $1 
-		WHERE uid = $2`,
-		video.CreatedAt, video.UserID)
+		SET last_post_at = $1::timestamp, updated_at = $2::timestamp 
+		WHERE uid = $3`,
+		updateTime, updateTime, video.UserID)
 	if err != nil {
+		log.Printf("❌ USER UPDATE ERROR: %v", err)
+		log.Printf("❌ Failed to update last_post_at for user: %s", video.UserID)
 		return "", fmt.Errorf("failed to update user last post: %w", err)
 	}
+	log.Printf("✅ USER LAST_POST_AT UPDATED SUCCESSFULLY")
 
+	log.Printf("🔄 COMMITTING TRANSACTION...")
 	if err = tx.Commit(); err != nil {
+		log.Printf("❌ TRANSACTION COMMIT ERROR: %v", err)
 		return "", fmt.Errorf("failed to commit transaction: %w", err)
 	}
+	log.Printf("✅ TRANSACTION COMMITTED SUCCESSFULLY")
 
+	log.Printf("🎉 VIDEO CREATION COMPLETED: %s", video.ID)
 	return video.ID, nil
 }
 
