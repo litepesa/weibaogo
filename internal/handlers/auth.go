@@ -71,9 +71,9 @@ func (h *AuthHandler) GetCurrentUser(c *gin.Context) {
 	var user models.User
 	query := `
 		SELECT uid, name, phone_number, whatsapp_number, profile_image, cover_image, bio, 
-		       user_type, role, followers_count, following_count, videos_count, likes_count,
-		       is_verified, is_active, is_featured, tags,
-		       favorite_dramas, unlocked_dramas, drama_progress,
+		       user_type, role, gender, location, language,
+		       followers_count, following_count, videos_count, likes_count,
+		       is_verified, is_active, is_featured, is_live, tags,
 		       created_at, updated_at, last_seen, last_post_at
 		FROM users 
 		WHERE uid = $1 AND is_active = true`
@@ -92,16 +92,20 @@ func (h *AuthHandler) GetCurrentUser(c *gin.Context) {
 		HasWhatsApp:             user.HasWhatsApp(),
 		WhatsAppLink:            user.GetWhatsAppLink(),
 		WhatsAppLinkWithMessage: user.GetWhatsAppLinkWithMessage(),
+		GenderDisplay:           user.GetGenderDisplay(),
+		LocationDisplay:         user.GetLocationDisplay(),
+		LanguageDisplay:         user.GetLanguageDisplay(),
+		HasGender:               user.HasGender(),
+		HasLocation:             user.HasLocation(),
+		HasLanguage:             user.HasLanguage(),
 		HasPostedVideos:         user.HasPostedVideos(),
 		LastPostTimeAgo:         user.GetLastPostTimeAgo(),
-		FavoriteDramasCount:     len(user.FavoriteDramas),
-		UnlockedDramasCount:     len(user.UnlockedDramas),
 	}
 
 	c.JSON(http.StatusOK, response)
 }
 
-// 🚀 UPDATED: Validate admin role with new role system
+// Validate admin role with new role system
 func (h *AuthHandler) RequireAdmin(c *gin.Context) {
 	userID := c.GetString("userID")
 	if userID == "" {
@@ -135,7 +139,7 @@ func (h *AuthHandler) RequireAdmin(c *gin.Context) {
 	c.Next()
 }
 
-// 🆕 NEW: Validate content creator role (admin or host)
+// Validate content creator role (admin or host)
 func (h *AuthHandler) RequireContentCreator(c *gin.Context) {
 	userID := c.GetString("userID")
 	if userID == "" {
@@ -167,17 +171,20 @@ func (h *AuthHandler) RequireContentCreator(c *gin.Context) {
 	c.Next()
 }
 
-// 🚀 UPDATED: SyncUser with role support and WhatsApp number
+// SyncUser with role support and WhatsApp number
 func (h *AuthHandler) SyncUser(c *gin.Context) {
 	// Get user data from request body with new fields
 	var requestData struct {
 		UID            string  `json:"uid" binding:"required"`
 		Name           string  `json:"name"`
 		PhoneNumber    string  `json:"phoneNumber"`
-		WhatsappNumber *string `json:"whatsappNumber"` // NEW: Optional WhatsApp number
-		ProfileImage   string  `json:"profileImage"`   // Will be empty initially, filled after R2 upload
+		WhatsappNumber *string `json:"whatsappNumber"`
+		ProfileImage   string  `json:"profileImage"`
 		Bio            string  `json:"bio"`
-		Role           *string `json:"role"` // NEW: Optional role (defaults to guest)
+		Role           *string `json:"role"`
+		Gender         *string `json:"gender"`
+		Location       *string `json:"location"`
+		Language       *string `json:"language"`
 	}
 
 	if err := c.ShouldBindJSON(&requestData); err != nil {
@@ -224,12 +231,15 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 			UID:            requestData.UID,
 			Name:           getValidName(requestData.Name),
 			PhoneNumber:    requestData.PhoneNumber,
-			WhatsappNumber: whatsappNumber, // NEW: WhatsApp number
-			ProfileImage:   "",             // Empty - will be uploaded to R2 during profile setup
-			CoverImage:     "",             // Empty initially
+			WhatsappNumber: whatsappNumber,
+			ProfileImage:   "",
+			CoverImage:     "",
 			Bio:            getValidBio(requestData.Bio),
-			UserType:       "user", // Keep for backward compatibility
-			Role:           role,   // NEW: User role
+			UserType:       "user",
+			Role:           role,
+			Gender:         requestData.Gender,
+			Location:       requestData.Location,
+			Language:       requestData.Language,
 			FollowersCount: 0,
 			FollowingCount: 0,
 			VideosCount:    0,
@@ -237,16 +247,11 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 			IsVerified:     false,
 			IsActive:       true,
 			IsFeatured:     false,
+			IsLive:         false,
 			Tags:           make(models.StringSlice, 0),
-
-			// Initialize drama-related fields
-			FavoriteDramas: make(models.StringSlice, 0),
-			UnlockedDramas: make(models.StringSlice, 0),
-			DramaProgress:  make(models.IntMap),
-
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
-			LastSeen:  time.Now(),
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
+			LastSeen:       time.Now(),
 		}
 
 		// Validate user data
@@ -259,14 +264,14 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 		// Insert new user with role and WhatsApp support
 		query := `
 			INSERT INTO users (uid, name, phone_number, whatsapp_number, profile_image, cover_image, bio, 
-			                   user_type, role, followers_count, following_count, videos_count, likes_count,
-			                   is_verified, is_active, is_featured, tags, 
-			                   favorite_dramas, unlocked_dramas, drama_progress,
+			                   user_type, role, gender, location, language,
+			                   followers_count, following_count, videos_count, likes_count,
+			                   is_verified, is_active, is_featured, is_live, tags,
 			                   created_at, updated_at, last_seen)
 			VALUES (:uid, :name, :phone_number, :whatsapp_number, :profile_image, :cover_image, :bio, 
-			        :user_type, :role, :followers_count, :following_count, :videos_count, :likes_count,
-			        :is_verified, :is_active, :is_featured, :tags,
-			        :favorite_dramas, :unlocked_dramas, :drama_progress,
+			        :user_type, :role, :gender, :location, :language,
+			        :followers_count, :following_count, :videos_count, :likes_count,
+			        :is_verified, :is_active, :is_featured, :is_live, :tags,
 			        :created_at, :updated_at, :last_seen)`
 
 		_, err = db.NamedExec(query, newUser)
@@ -286,10 +291,14 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 			HasWhatsApp:             newUser.HasWhatsApp(),
 			WhatsAppLink:            newUser.GetWhatsAppLink(),
 			WhatsAppLinkWithMessage: newUser.GetWhatsAppLinkWithMessage(),
+			GenderDisplay:           newUser.GetGenderDisplay(),
+			LocationDisplay:         newUser.GetLocationDisplay(),
+			LanguageDisplay:         newUser.GetLanguageDisplay(),
+			HasGender:               newUser.HasGender(),
+			HasLocation:             newUser.HasLocation(),
+			HasLanguage:             newUser.HasLanguage(),
 			HasPostedVideos:         newUser.HasPostedVideos(),
 			LastPostTimeAgo:         newUser.GetLastPostTimeAgo(),
-			FavoriteDramasCount:     len(newUser.FavoriteDramas),
-			UnlockedDramasCount:     len(newUser.UnlockedDramas),
 		}
 
 		c.JSON(http.StatusCreated, gin.H{
@@ -321,10 +330,14 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 		HasWhatsApp:             existingUser.HasWhatsApp(),
 		WhatsAppLink:            existingUser.GetWhatsAppLink(),
 		WhatsAppLinkWithMessage: existingUser.GetWhatsAppLinkWithMessage(),
+		GenderDisplay:           existingUser.GetGenderDisplay(),
+		LocationDisplay:         existingUser.GetLocationDisplay(),
+		LanguageDisplay:         existingUser.GetLanguageDisplay(),
+		HasGender:               existingUser.HasGender(),
+		HasLocation:             existingUser.HasLocation(),
+		HasLanguage:             existingUser.HasLanguage(),
 		HasPostedVideos:         existingUser.HasPostedVideos(),
 		LastPostTimeAgo:         existingUser.GetLastPostTimeAgo(),
-		FavoriteDramasCount:     len(existingUser.FavoriteDramas),
-		UnlockedDramasCount:     len(existingUser.UnlockedDramas),
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -333,7 +346,7 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 	})
 }
 
-// 🚀 UPDATED: SyncUserWithToken with role support
+// SyncUserWithToken with role support
 func (h *AuthHandler) SyncUserWithToken(c *gin.Context) {
 	userID := c.GetString("userID")
 	if userID == "" {
@@ -353,9 +366,9 @@ func (h *AuthHandler) SyncUserWithToken(c *gin.Context) {
 	var existingUser models.User
 	query := `
 		SELECT uid, name, phone_number, whatsapp_number, profile_image, cover_image, bio, 
-		       user_type, role, followers_count, following_count, videos_count, likes_count,
-		       is_verified, is_active, is_featured, tags,
-		       favorite_dramas, unlocked_dramas, drama_progress,
+		       user_type, role, gender, location, language,
+		       followers_count, following_count, videos_count, likes_count,
+		       is_verified, is_active, is_featured, is_live, tags,
 		       created_at, updated_at, last_seen, last_post_at
 		FROM users 
 		WHERE uid = $1`
@@ -368,12 +381,15 @@ func (h *AuthHandler) SyncUserWithToken(c *gin.Context) {
 			UID:            userID,
 			Name:           getFirebaseDisplayName(firebaseUser),
 			PhoneNumber:    firebaseUser.PhoneNumber,
-			WhatsappNumber: nil, // Will be set later during profile setup
-			ProfileImage:   "",  // Empty - will be uploaded to R2 during profile setup
-			CoverImage:     "",  // Empty initially
-			Bio:            "",  // Empty initially
+			WhatsappNumber: nil,
+			ProfileImage:   "",
+			CoverImage:     "",
+			Bio:            "",
 			UserType:       "user",
-			Role:           models.UserRoleGuest, // Default role for Firebase users
+			Role:           models.UserRoleGuest,
+			Gender:         nil,
+			Location:       nil,
+			Language:       nil,
 			FollowersCount: 0,
 			FollowingCount: 0,
 			VideosCount:    0,
@@ -381,28 +397,23 @@ func (h *AuthHandler) SyncUserWithToken(c *gin.Context) {
 			IsVerified:     false,
 			IsActive:       true,
 			IsFeatured:     false,
+			IsLive:         false,
 			Tags:           make(models.StringSlice, 0),
-
-			// Initialize drama-related fields
-			FavoriteDramas: make(models.StringSlice, 0),
-			UnlockedDramas: make(models.StringSlice, 0),
-			DramaProgress:  make(models.IntMap),
-
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
-			LastSeen:  time.Now(),
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
+			LastSeen:       time.Now(),
 		}
 
 		insertQuery := `
 			INSERT INTO users (uid, name, phone_number, whatsapp_number, profile_image, cover_image, bio, 
-			                   user_type, role, followers_count, following_count, videos_count, likes_count,
-			                   is_verified, is_active, is_featured, tags,
-			                   favorite_dramas, unlocked_dramas, drama_progress,
+			                   user_type, role, gender, location, language,
+			                   followers_count, following_count, videos_count, likes_count,
+			                   is_verified, is_active, is_featured, is_live, tags,
 			                   created_at, updated_at, last_seen)
 			VALUES (:uid, :name, :phone_number, :whatsapp_number, :profile_image, :cover_image, :bio, 
-			        :user_type, :role, :followers_count, :following_count, :videos_count, :likes_count,
-			        :is_verified, :is_active, :is_featured, :tags,
-			        :favorite_dramas, :unlocked_dramas, :drama_progress,
+			        :user_type, :role, :gender, :location, :language,
+			        :followers_count, :following_count, :videos_count, :likes_count,
+			        :is_verified, :is_active, :is_featured, :is_live, :tags,
 			        :created_at, :updated_at, :last_seen)`
 
 		_, err = db.NamedExec(insertQuery, newUser)
@@ -419,10 +430,14 @@ func (h *AuthHandler) SyncUserWithToken(c *gin.Context) {
 			HasWhatsApp:             newUser.HasWhatsApp(),
 			WhatsAppLink:            newUser.GetWhatsAppLink(),
 			WhatsAppLinkWithMessage: newUser.GetWhatsAppLinkWithMessage(),
+			GenderDisplay:           newUser.GetGenderDisplay(),
+			LocationDisplay:         newUser.GetLocationDisplay(),
+			LanguageDisplay:         newUser.GetLanguageDisplay(),
+			HasGender:               newUser.HasGender(),
+			HasLocation:             newUser.HasLocation(),
+			HasLanguage:             newUser.HasLanguage(),
 			HasPostedVideos:         newUser.HasPostedVideos(),
 			LastPostTimeAgo:         newUser.GetLastPostTimeAgo(),
-			FavoriteDramasCount:     len(newUser.FavoriteDramas),
-			UnlockedDramasCount:     len(newUser.UnlockedDramas),
 		}
 
 		c.JSON(http.StatusCreated, gin.H{
@@ -451,10 +466,14 @@ func (h *AuthHandler) SyncUserWithToken(c *gin.Context) {
 		HasWhatsApp:             existingUser.HasWhatsApp(),
 		WhatsAppLink:            existingUser.GetWhatsAppLink(),
 		WhatsAppLinkWithMessage: existingUser.GetWhatsAppLinkWithMessage(),
+		GenderDisplay:           existingUser.GetGenderDisplay(),
+		LocationDisplay:         existingUser.GetLocationDisplay(),
+		LanguageDisplay:         existingUser.GetLanguageDisplay(),
+		HasGender:               existingUser.HasGender(),
+		HasLocation:             existingUser.HasLocation(),
+		HasLanguage:             existingUser.HasLanguage(),
 		HasPostedVideos:         existingUser.HasPostedVideos(),
 		LastPostTimeAgo:         existingUser.GetLastPostTimeAgo(),
-		FavoriteDramasCount:     len(existingUser.FavoriteDramas),
-		UnlockedDramasCount:     len(existingUser.UnlockedDramas),
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -468,7 +487,7 @@ func getValidName(name string) string {
 	if name != "" && len(name) >= 2 {
 		return name
 	}
-	return "User" // Default name if empty or too short
+	return "User"
 }
 
 // Helper function to get valid bio
@@ -476,7 +495,7 @@ func getValidBio(bio string) string {
 	if bio != "" {
 		return bio
 	}
-	return "" // Empty bio is fine, will be filled later
+	return ""
 }
 
 // Helper function to safely extract Firebase display name
@@ -484,5 +503,5 @@ func getFirebaseDisplayName(user *auth.UserRecord) string {
 	if user.DisplayName != "" {
 		return user.DisplayName
 	}
-	return "User" // Default name
+	return "User"
 }

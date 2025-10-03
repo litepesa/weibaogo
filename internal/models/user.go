@@ -116,32 +116,6 @@ func ParseUserGender(s string) *UserGender {
 	}
 }
 
-// IntMap represents a map[string]int that can be stored in PostgreSQL as JSONB
-type IntMap map[string]int
-
-// Value implements driver.Valuer for database storage
-func (m IntMap) Value() (driver.Value, error) {
-	if m == nil {
-		return nil, nil
-	}
-	return json.Marshal(m)
-}
-
-// Scan implements sql.Scanner for database retrieval
-func (m *IntMap) Scan(value interface{}) error {
-	if value == nil {
-		*m = make(IntMap)
-		return nil
-	}
-
-	bytes, ok := value.([]byte)
-	if !ok {
-		return fmt.Errorf("cannot scan %T into IntMap", value)
-	}
-
-	return json.Unmarshal(bytes, m)
-}
-
 type User struct {
 	UID            string      `json:"uid" db:"uid"`
 	Name           string      `json:"name" db:"name" binding:"required"`
@@ -152,9 +126,9 @@ type User struct {
 	Bio            string      `json:"bio" db:"bio"`
 	UserType       string      `json:"userType" db:"user_type"` // Keep for backward compatibility
 	Role           UserRole    `json:"role" db:"role"`
-	Gender         *string     `json:"gender" db:"gender"`     // NEW: User gender (male/female)
-	Location       *string     `json:"location" db:"location"` // NEW: User location (e.g., "Nairobi, Kenya")
-	Language       *string     `json:"language" db:"language"` // NEW: User native language (e.g., "English", "Swahili")
+	Gender         *string     `json:"gender" db:"gender"`     // User gender (male/female)
+	Location       *string     `json:"location" db:"location"` // User ward location (format: "Ward, Constituency, County")
+	Language       *string     `json:"language" db:"language"` // User native tribe/language (one of 43 Kenyan tribes or "Foreign")
 	FollowersCount int         `json:"followersCount" db:"followers_count"`
 	FollowingCount int         `json:"followingCount" db:"following_count"`
 	VideosCount    int         `json:"videosCount" db:"videos_count"`
@@ -162,12 +136,8 @@ type User struct {
 	IsVerified     bool        `json:"isVerified" db:"is_verified"`
 	IsActive       bool        `json:"isActive" db:"is_active"`
 	IsFeatured     bool        `json:"isFeatured" db:"is_featured"`
+	IsLive         bool        `json:"isLive" db:"is_live"` // Track if user is currently live streaming
 	Tags           StringSlice `json:"tags" db:"tags"`
-
-	// Drama-related fields (keeping for compatibility)
-	FavoriteDramas StringSlice `json:"favoriteDramas" db:"favorite_dramas"`
-	UnlockedDramas StringSlice `json:"unlockedDramas" db:"unlocked_dramas"`
-	DramaProgress  IntMap      `json:"dramaProgress" db:"drama_progress"`
 
 	CreatedAt  time.Time  `json:"createdAt" db:"created_at"`
 	UpdatedAt  time.Time  `json:"updatedAt" db:"updated_at"`
@@ -240,7 +210,7 @@ func (u *User) CanPost() bool {
 	return u.Role.CanPost()
 }
 
-// NEW: Gender helper methods
+// Gender helper methods
 func (u *User) HasGender() bool {
 	return u.Gender != nil && *u.Gender != ""
 }
@@ -270,7 +240,7 @@ func (u *User) IsFemale() bool {
 	return gender != nil && *gender == UserGenderFemale
 }
 
-// NEW: Location helper methods
+// Location helper methods
 func (u *User) HasLocation() bool {
 	return u.Location != nil && *u.Location != ""
 }
@@ -289,7 +259,7 @@ func (u *User) GetLocationDisplay() string {
 	return *u.Location
 }
 
-// NEW: Language helper methods
+// Language helper methods
 func (u *User) HasLanguage() bool {
 	return u.Language != nil && *u.Language != ""
 }
@@ -368,35 +338,6 @@ func FormatWhatsAppNumber(input string) (*string, error) {
 	default:
 		return nil, fmt.Errorf("invalid phone number format: %s", input)
 	}
-}
-
-func (u *User) CanCreateDramas() bool {
-	return u.IsVerified && u.IsActive
-}
-
-func (u *User) HasUnlockedDrama(dramaID string) bool {
-	for _, id := range u.UnlockedDramas {
-		if id == dramaID {
-			return true
-		}
-	}
-	return false
-}
-
-func (u *User) HasFavoritedDrama(dramaID string) bool {
-	for _, id := range u.FavoriteDramas {
-		if id == dramaID {
-			return true
-		}
-	}
-	return false
-}
-
-func (u *User) GetDramaProgress(dramaID string) int {
-	if u.DramaProgress == nil {
-		return 0
-	}
-	return u.DramaProgress[dramaID]
 }
 
 func (u *User) HasPostedVideos() bool {
@@ -509,7 +450,7 @@ func (u *User) ValidateForCreation() []string {
 		errors = append(errors, err.Error())
 	}
 
-	// NEW: Validate gender
+	// Validate gender
 	if u.Gender != nil && *u.Gender != "" {
 		gender := ParseUserGender(*u.Gender)
 		if gender == nil {
@@ -517,14 +458,24 @@ func (u *User) ValidateForCreation() []string {
 		}
 	}
 
-	// NEW: Validate location length
-	if u.Location != nil && len(*u.Location) > 255 {
-		errors = append(errors, "Location cannot exceed 255 characters")
+	// Validate location format (Ward, Constituency, County)
+	if u.Location != nil && *u.Location != "" {
+		if len(*u.Location) > 255 {
+			errors = append(errors, "Location cannot exceed 255 characters")
+		}
+		if !IsValidWardLocation(*u.Location) {
+			errors = append(errors, "Location must be in format: 'Ward, Constituency, County'")
+		}
 	}
 
-	// NEW: Validate language length
-	if u.Language != nil && len(*u.Language) > 100 {
-		errors = append(errors, "Language cannot exceed 100 characters")
+	// Validate language/tribe (must be one of 43 Kenyan tribes or Foreign)
+	if u.Language != nil && *u.Language != "" {
+		if len(*u.Language) > 100 {
+			errors = append(errors, "Language cannot exceed 100 characters")
+		}
+		if !IsValidKenyanTribe(*u.Language) {
+			errors = append(errors, "Language must be one of the 43 Kenyan tribes or 'Foreign'")
+		}
 	}
 
 	return errors
@@ -552,9 +503,9 @@ type CreateUserRequest struct {
 	ProfileImage   string  `json:"profileImage"`
 	Bio            string  `json:"bio"`
 	Role           *string `json:"role"`
-	Gender         *string `json:"gender"`   // NEW: Optional gender
-	Location       *string `json:"location"` // NEW: Optional location
-	Language       *string `json:"language"` // NEW: Optional language
+	Gender         *string `json:"gender"`   // Optional: "male" or "female"
+	Location       *string `json:"location"` // Optional: Ward location (format: "Ward, Constituency, County")
+	Language       *string `json:"language"` // Optional: Native tribe/language (one of 43 Kenyan tribes or "Foreign")
 }
 
 type UpdateUserRequest struct {
@@ -564,9 +515,9 @@ type UpdateUserRequest struct {
 	Bio            string   `json:"bio"`
 	Tags           []string `json:"tags"`
 	WhatsappNumber *string  `json:"whatsappNumber"`
-	Gender         *string  `json:"gender"`   // NEW: Optional gender
-	Location       *string  `json:"location"` // NEW: Optional location
-	Language       *string  `json:"language"` // NEW: Optional language
+	Gender         *string  `json:"gender"`   // Optional: "male" or "female"
+	Location       *string  `json:"location"` // Optional: Ward location (format: "Ward, Constituency, County")
+	Language       *string  `json:"language"` // Optional: Native tribe/language (one of 43 Kenyan tribes or "Foreign")
 }
 
 // User response models
@@ -579,19 +530,16 @@ type UserResponse struct {
 	HasWhatsApp             bool    `json:"hasWhatsApp"`
 	WhatsAppLink            *string `json:"whatsAppLink,omitempty"`
 	WhatsAppLinkWithMessage *string `json:"whatsAppLinkWithMessage,omitempty"`
-	// NEW: Profile fields
+	// Profile fields
 	GenderDisplay   string `json:"genderDisplay"`
 	LocationDisplay string `json:"locationDisplay"`
 	LanguageDisplay string `json:"languageDisplay"`
 	HasGender       bool   `json:"hasGender"`
 	HasLocation     bool   `json:"hasLocation"`
 	HasLanguage     bool   `json:"hasLanguage"`
-	// Drama-related
-	CreatedDramasCount  int    `json:"createdDramasCount,omitempty"`
-	FavoriteDramasCount int    `json:"favoriteDramasCount"`
-	UnlockedDramasCount int    `json:"unlockedDramasCount"`
-	HasPostedVideos     bool   `json:"hasPostedVideos"`
-	LastPostTimeAgo     string `json:"lastPostTimeAgo"`
+	// Post activity
+	HasPostedVideos bool   `json:"hasPostedVideos"`
+	LastPostTimeAgo string `json:"lastPostTimeAgo"`
 }
 
 type UserListResponse struct {
@@ -608,9 +556,9 @@ type UserSearchParams struct {
 	Query    string    `json:"query"`
 	UserType string    `json:"userType"`
 	Role     *UserRole `json:"role"`
-	Gender   *string   `json:"gender"`   // NEW: Filter by gender
-	Location *string   `json:"location"` // NEW: Filter by location
-	Language *string   `json:"language"` // NEW: Filter by language
+	Gender   *string   `json:"gender"`   // Filter by gender: "male" or "female"
+	Location *string   `json:"location"` // Filter by ward location
+	Language *string   `json:"language"` // Filter by tribe/language
 	Verified *bool     `json:"verified"`
 	Featured *bool     `json:"featured"`
 	Limit    int       `json:"limit"`
@@ -633,16 +581,11 @@ type UserStats struct {
 
 	HasWhatsApp bool `json:"hasWhatsApp"`
 
-	// NEW: Profile stats
+	// Profile stats
 	Gender        *string `json:"gender,omitempty"`
 	GenderDisplay string  `json:"genderDisplay"`
 	Location      *string `json:"location,omitempty"`
 	Language      *string `json:"language,omitempty"`
-
-	CreatedDramasCount  int `json:"createdDramasCount"`
-	DramaRevenue        int `json:"dramaRevenue,omitempty"`
-	FavoriteDramasCount int `json:"favoriteDramasCount"`
-	UnlockedDramasCount int `json:"unlockedDramasCount"`
 
 	HasPostedVideos bool       `json:"hasPostedVideos"`
 	LastPostAt      *time.Time `json:"lastPostAt"`
@@ -668,8 +611,8 @@ const (
 	MinUsernameLength   = 2
 	MaxProfileImageSize = 10 * 1024 * 1024
 	MaxCoverImageSize   = 15 * 1024 * 1024
-	MaxLocationLength   = 255 // NEW
-	MaxLanguageLength   = 100 // NEW
+	MaxLocationLength   = 255 // Accommodates full ward location format: "Ward, Constituency, County"
+	MaxLanguageLength   = 100 // Accommodates tribe names
 )
 
 const (
@@ -677,3 +620,44 @@ const (
 	UserTypeAdmin     = "admin"
 	UserTypeModerator = "moderator"
 )
+
+// Helper functions for Kenya-specific validation
+
+// ValidKenyanTribes - List of all 42 Kenyan tribes + Foreign (43 total)
+var ValidKenyanTribes = []string{
+	// Bantu Group
+	"Kikuyu", "Luhya", "Kamba", "Kisii", "Meru", "Mijikenda", "Embu", "Taita", "Kuria",
+	"Mbeere", "Tharaka", "Pokomo", "Taveta", "Maragoli", "Bukusu", "Idakho", "Isukha",
+	"Kabras", "Khayo", "Marachi", "Samia", "Tachoni", "Wanga",
+	// Nilotic Group
+	"Luo", "Kalenjin", "Maasai", "Turkana", "Samburu", "Teso", "Pokot", "Nandi",
+	"Kipsigis", "Tugen", "Keiyo", "Marakwet", "Sabaot", "Njemps", "Terik",
+	// Cushitic Group
+	"Somali", "Oromo", "Rendille", "Borana",
+	// Foreign
+	"Foreign",
+}
+
+// IsValidKenyanTribe checks if the language/tribe is valid
+func IsValidKenyanTribe(tribe string) bool {
+	if tribe == "" {
+		return true // Empty is allowed (optional field)
+	}
+	for _, validTribe := range ValidKenyanTribes {
+		if tribe == validTribe {
+			return true
+		}
+	}
+	return false
+}
+
+// IsValidWardLocation validates the location format: "Ward, Constituency, County"
+func IsValidWardLocation(location string) bool {
+	if location == "" {
+		return true // Empty is allowed (optional field)
+	}
+	// Basic validation: should have at least 2 commas for proper format
+	parts := strings.Split(location, ",")
+	return len(parts) == 3 && len(strings.TrimSpace(parts[0])) > 0 &&
+		len(strings.TrimSpace(parts[1])) > 0 && len(strings.TrimSpace(parts[2])) > 0
+}

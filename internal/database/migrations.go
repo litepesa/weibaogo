@@ -1081,6 +1081,14 @@ func RunMigrations(db *sqlx.DB) error {
 		COMMENT ON COLUMN users.language IS 'User native/spoken language in free text format, e.g., "English", "Swahili", "French" (optional)';
 	`,
 		},
+		{
+			Version: "013_increase_price_limit",
+			Query: `
+        -- Increase price column limit to support up to 999,999,999.99
+        ALTER TABLE videos 
+        ALTER COLUMN price TYPE DECIMAL(12,2);
+    `,
+		},
 	}
 
 	for _, migration := range migrations {
