@@ -1,10 +1,11 @@
 // ===============================
-// internal/handlers/auth.go - UPDATED Auth Handler with Role Support
+// internal/handlers/auth.go - FIXED: Profile Image URL Saved During Registration
 // ===============================
 
 package handlers
 
 import (
+	"log"
 	"net/http"
 	"time"
 
@@ -171,7 +172,7 @@ func (h *AuthHandler) RequireContentCreator(c *gin.Context) {
 	c.Next()
 }
 
-// SyncUser with role support and WhatsApp number
+// SyncUser with role support and WhatsApp number - FIXED: Now properly saves profile image
 func (h *AuthHandler) SyncUser(c *gin.Context) {
 	// Get user data from request body with new fields
 	var requestData struct {
@@ -179,7 +180,8 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 		Name           string  `json:"name"`
 		PhoneNumber    string  `json:"phoneNumber"`
 		WhatsappNumber *string `json:"whatsappNumber"`
-		ProfileImage   string  `json:"profileImage"`
+		ProfileImage   string  `json:"profileImage"` // ✅ FIXED: Now properly received
+		CoverImage     string  `json:"coverImage"`   // ✅ FIXED: Now properly received
 		Bio            string  `json:"bio"`
 		Role           *string `json:"role"`
 		Gender         *string `json:"gender"`
@@ -226,14 +228,14 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 	err := db.Get(&existingUser, "SELECT * FROM users WHERE uid = $1", requestData.UID)
 
 	if err != nil {
-		// User doesn't exist, create new user with role and WhatsApp support
+		// ✅ FIXED: User doesn't exist, create new user WITH profile and cover images from request
 		newUser := models.User{
 			UID:            requestData.UID,
 			Name:           getValidName(requestData.Name),
 			PhoneNumber:    requestData.PhoneNumber,
 			WhatsappNumber: whatsappNumber,
-			ProfileImage:   "",
-			CoverImage:     "",
+			ProfileImage:   requestData.ProfileImage, // ✅ FIXED: Use image from request
+			CoverImage:     requestData.CoverImage,   // ✅ FIXED: Use image from request
 			Bio:            getValidBio(requestData.Bio),
 			UserType:       "user",
 			Role:           role,
@@ -261,7 +263,7 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 			return
 		}
 
-		// Insert new user with role and WhatsApp support
+		// ✅ FIXED: Insert new user WITH profile_image and cover_image
 		query := `
 			INSERT INTO users (uid, name, phone_number, whatsapp_number, profile_image, cover_image, bio, 
 			                   user_type, role, gender, location, language,
@@ -282,6 +284,13 @@ func (h *AuthHandler) SyncUser(c *gin.Context) {
 			})
 			return
 		}
+
+		// ✅ FIXED: Log to verify image URLs are saved (use your logging framework)
+		log.Printf("✅ User created successfully:")
+		log.Printf("   - UID: %s", newUser.UID)
+		log.Printf("   - Name: %s", newUser.Name)
+		log.Printf("   - Profile Image: %s", newUser.ProfileImage)
+		log.Printf("   - Cover Image: %s", newUser.CoverImage)
 
 		// Create enhanced response
 		response := models.UserResponse{
