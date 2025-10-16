@@ -1,5 +1,5 @@
 // ===============================
-// internal/handlers/auth.go - FIXED: Profile Image URL Saved During Registration
+// internal/handlers/auth.go - UPDATED: Allow All Users to Post
 // ===============================
 
 package handlers
@@ -140,7 +140,7 @@ func (h *AuthHandler) RequireAdmin(c *gin.Context) {
 	c.Next()
 }
 
-// Validate content creator role (admin or host)
+// ✅ UPDATED: Validate content creator - Now allows all authenticated active users
 func (h *AuthHandler) RequireContentCreator(c *gin.Context) {
 	userID := c.GetString("userID")
 	if userID == "" {
@@ -149,26 +149,25 @@ func (h *AuthHandler) RequireContentCreator(c *gin.Context) {
 		return
 	}
 
-	// Check if user can post content
+	// Check if user exists and is active
 	db := database.GetDB()
-	var role models.UserRole
-	err := db.QueryRow("SELECT role FROM users WHERE uid = $1 AND is_active = true", userID).Scan(&role)
+	var isActive bool
+	err := db.QueryRow("SELECT is_active FROM users WHERE uid = $1", userID).Scan(&isActive)
 	if err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": "User not found"})
 		c.Abort()
 		return
 	}
 
-	if !role.CanPost() {
+	if !isActive {
 		c.JSON(http.StatusForbidden, gin.H{
-			"error":        "Content creation access required",
-			"userRole":     role.String(),
-			"allowedRoles": []string{"admin", "host", "guest"},
+			"error": "User account is inactive",
 		})
 		c.Abort()
 		return
 	}
 
+	// All active authenticated users can post content
 	c.Next()
 }
 

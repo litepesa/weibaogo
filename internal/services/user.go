@@ -269,10 +269,6 @@ func (s *UserService) ValidateUserForVideoCreation(ctx context.Context, userID s
 		return fmt.Errorf("user account is inactive")
 	}
 
-	if !user.CanPost() {
-		return fmt.Errorf("user role '%s' cannot post videos. Only admin and host users can post", user.Role.DisplayName())
-	}
-
 	return nil
 }
 

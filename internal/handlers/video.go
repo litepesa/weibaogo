@@ -1,5 +1,5 @@
 // ===============================
-// internal/handlers/video.go - SIMPLIFIED with Fuzzy Search + History
+// internal/handlers/video.go - UPDATED: Allow All Users to Post
 // ===============================
 
 package handlers
@@ -870,7 +870,7 @@ func (h *VideoHandler) GetUserLikedVideos(c *gin.Context) {
 }
 
 // ===============================
-// AUTHENTICATED VIDEO ENDPOINTS
+// ✅ UPDATED: AUTHENTICATED VIDEO ENDPOINTS - All Active Users Can Post
 // ===============================
 
 func (h *VideoHandler) CreateVideo(c *gin.Context) {
@@ -885,13 +885,13 @@ func (h *VideoHandler) CreateVideo(c *gin.Context) {
 		return
 	}
 
+	// Validate user exists and is active (no role restriction)
 	err := h.userService.ValidateUserForVideoCreation(c.Request.Context(), userID)
 	if err != nil {
 		c.JSON(http.StatusForbidden, gin.H{
-			"error":        "Video creation not allowed",
-			"code":         "ROLE_PERMISSION_DENIED",
-			"details":      err.Error(),
-			"allowedRoles": []string{"admin", "host"},
+			"error":   "Video creation not allowed",
+			"code":    "USER_VALIDATION_FAILED",
+			"details": err.Error(),
 		})
 		return
 	}
@@ -906,7 +906,7 @@ func (h *VideoHandler) CreateVideo(c *gin.Context) {
 		return
 	}
 
-	userName, userImage, userRole, err := h.userService.GetUserBasicInfo(c.Request.Context(), userID)
+	userName, userImage, _, err := h.userService.GetUserBasicInfo(c.Request.Context(), userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Failed to get user information",
@@ -915,15 +915,17 @@ func (h *VideoHandler) CreateVideo(c *gin.Context) {
 		return
 	}
 
-	if !userRole.CanPost() {
-		c.JSON(http.StatusForbidden, gin.H{
-			"error":        "User role cannot post videos",
-			"code":         "ROLE_PERMISSION_DENIED",
-			"userRole":     userRole.String(),
-			"allowedRoles": []string{"admin", "host"},
-		})
-		return
-	}
+	// ✅ REMOVED: Role check - all authenticated users can post
+	// Old code that was removed:
+	// if !userRole.CanPost() {
+	// 	c.JSON(http.StatusForbidden, gin.H{
+	// 		"error":        "User role cannot post videos",
+	// 		"code":         "ROLE_PERMISSION_DENIED",
+	// 		"userRole":     userRole.String(),
+	// 		"allowedRoles": []string{"admin", "host"},
+	// 	})
+	// 	return
+	// }
 
 	video := &models.Video{
 		UserID:           userID,
