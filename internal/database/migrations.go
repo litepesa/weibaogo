@@ -1,5 +1,5 @@
 // ===============================
-// internal/database/migrations.go - COMPLETE VERSION with Search Support
+// internal/database/migrations.go - COMPLETE VERSION with Gift System & Platform Commissions
 // ===============================
 
 package database
@@ -1089,6 +1089,393 @@ func RunMigrations(db *sqlx.DB) error {
         ALTER COLUMN price TYPE DECIMAL(12,2);
     `,
 		},
+		{
+			Version: "014_gift_system_with_platform_commissions",
+			Query: `
+		-- ===============================
+		-- 🎁 VIRTUAL GIFT SYSTEM WITH PLATFORM COMMISSIONS
+		-- ===============================
+		
+		-- 1. Add gift statistics columns to users table
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS gifts_sent_count INTEGER DEFAULT 0;
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS gifts_received_count INTEGER DEFAULT 0;
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS total_coins_spent_on_gifts INTEGER DEFAULT 0;
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS total_coins_earned_from_gifts INTEGER DEFAULT 0;
+
+		-- Add constraints for gift statistics
+		DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM information_schema.table_constraints 
+				WHERE constraint_name = 'users_gifts_sent_count_positive' 
+				AND table_name = 'users'
+			) THEN
+				ALTER TABLE users ADD CONSTRAINT users_gifts_sent_count_positive
+				CHECK (gifts_sent_count >= 0);
+			END IF;
+
+			IF NOT EXISTS (
+				SELECT 1 FROM information_schema.table_constraints 
+				WHERE constraint_name = 'users_gifts_received_count_positive' 
+				AND table_name = 'users'
+			) THEN
+				ALTER TABLE users ADD CONSTRAINT users_gifts_received_count_positive
+				CHECK (gifts_received_count >= 0);
+			END IF;
+
+			IF NOT EXISTS (
+				SELECT 1 FROM information_schema.table_constraints 
+				WHERE constraint_name = 'users_total_coins_spent_positive' 
+				AND table_name = 'users'
+			) THEN
+				ALTER TABLE users ADD CONSTRAINT users_total_coins_spent_positive
+				CHECK (total_coins_spent_on_gifts >= 0);
+			END IF;
+
+			IF NOT EXISTS (
+				SELECT 1 FROM information_schema.table_constraints 
+				WHERE constraint_name = 'users_total_coins_earned_positive' 
+				AND table_name = 'users'
+			) THEN
+				ALTER TABLE users ADD CONSTRAINT users_total_coins_earned_positive
+				CHECK (total_coins_earned_from_gifts >= 0);
+			END IF;
+		END $$;
+
+		-- Create indexes for gift statistics
+		CREATE INDEX IF NOT EXISTS idx_users_gifts_sent_count ON users(gifts_sent_count DESC);
+		CREATE INDEX IF NOT EXISTS idx_users_gifts_received_count ON users(gifts_received_count DESC);
+		CREATE INDEX IF NOT EXISTS idx_users_total_coins_spent ON users(total_coins_spent_on_gifts DESC);
+		CREATE INDEX IF NOT EXISTS idx_users_total_coins_earned ON users(total_coins_earned_from_gifts DESC);
+
+		-- 2. Create gift_transactions table
+		CREATE TABLE IF NOT EXISTS gift_transactions (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			
+			-- Transaction participants
+			sender_id VARCHAR(255) NOT NULL,
+			sender_name VARCHAR(255) NOT NULL,
+			sender_phone VARCHAR(20) NOT NULL,
+			recipient_id VARCHAR(255) NOT NULL,
+			recipient_name VARCHAR(255) NOT NULL,
+			recipient_phone VARCHAR(20) NOT NULL,
+			
+			-- Gift details
+			gift_id VARCHAR(100) NOT NULL,
+			gift_name VARCHAR(100) NOT NULL,
+			gift_emoji VARCHAR(50) NOT NULL,
+			gift_rarity VARCHAR(50) NOT NULL,
+			
+			-- Financial details
+			gift_price INTEGER NOT NULL,
+			sender_paid INTEGER NOT NULL,
+			recipient_received INTEGER NOT NULL,
+			platform_commission INTEGER NOT NULL,
+			
+			-- Wallet balances
+			sender_balance_before INTEGER NOT NULL,
+			sender_balance_after INTEGER NOT NULL,
+			recipient_balance_before INTEGER NOT NULL,
+			recipient_balance_after INTEGER NOT NULL,
+			
+			-- Status and metadata
+			status VARCHAR(50) DEFAULT 'completed',
+			message TEXT,
+			metadata JSONB DEFAULT '{}',
+			
+			-- Timestamps
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			
+			-- Foreign keys
+			CONSTRAINT gift_transactions_sender_fkey 
+				FOREIGN KEY (sender_id) REFERENCES users(uid) ON DELETE CASCADE,
+			CONSTRAINT gift_transactions_recipient_fkey 
+				FOREIGN KEY (recipient_id) REFERENCES users(uid) ON DELETE CASCADE,
+			
+			-- Checks
+			CHECK (sender_id != recipient_id),
+			CHECK (gift_price > 0),
+			CHECK (sender_paid > 0),
+			CHECK (recipient_received >= 0),
+			CHECK (platform_commission >= 0),
+			CHECK (sender_paid = recipient_received + platform_commission)
+		);
+
+		-- Create indexes for gift_transactions
+		CREATE INDEX IF NOT EXISTS idx_gift_transactions_sender_id ON gift_transactions(sender_id, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_gift_transactions_recipient_id ON gift_transactions(recipient_id, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_gift_transactions_created_at ON gift_transactions(created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_gift_transactions_gift_id ON gift_transactions(gift_id);
+		CREATE INDEX IF NOT EXISTS idx_gift_transactions_status ON gift_transactions(status);
+
+		-- 3. Create platform_commissions table
+		CREATE TABLE IF NOT EXISTS platform_commissions (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			
+			-- Link to gift transaction
+			gift_transaction_id UUID NOT NULL,
+			
+			-- Commission details
+			commission_amount INTEGER NOT NULL,
+			original_gift_price INTEGER NOT NULL,
+			commission_rate DECIMAL(5,2) DEFAULT 30.00,
+			
+			-- Transaction participants (for reporting)
+			sender_id VARCHAR(255) NOT NULL,
+			recipient_id VARCHAR(255) NOT NULL,
+			gift_name VARCHAR(100) NOT NULL,
+			
+			-- Metadata
+			metadata JSONB DEFAULT '{}',
+			
+			-- Timestamps
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			
+			-- Foreign keys
+			CONSTRAINT platform_commissions_gift_transaction_fkey 
+				FOREIGN KEY (gift_transaction_id) REFERENCES gift_transactions(id) ON DELETE CASCADE,
+			CONSTRAINT platform_commissions_sender_fkey 
+				FOREIGN KEY (sender_id) REFERENCES users(uid) ON DELETE CASCADE,
+			CONSTRAINT platform_commissions_recipient_fkey 
+				FOREIGN KEY (recipient_id) REFERENCES users(uid) ON DELETE CASCADE,
+			
+			-- Checks
+			CHECK (commission_amount >= 0),
+			CHECK (original_gift_price > 0),
+			CHECK (commission_rate >= 0 AND commission_rate <= 100)
+		);
+
+		-- Create indexes for platform_commissions
+		CREATE INDEX IF NOT EXISTS idx_platform_commissions_gift_transaction_id ON platform_commissions(gift_transaction_id);
+		CREATE INDEX IF NOT EXISTS idx_platform_commissions_created_at ON platform_commissions(created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_platform_commissions_sender_id ON platform_commissions(sender_id);
+		CREATE INDEX IF NOT EXISTS idx_platform_commissions_recipient_id ON platform_commissions(recipient_id);
+
+		-- 4. Update wallet_transactions to support gift types
+		DO $$
+		BEGIN
+			-- Add gift_id column if it doesn't exist
+			IF NOT EXISTS (
+				SELECT 1 FROM information_schema.columns 
+				WHERE table_name = 'wallet_transactions' AND column_name = 'gift_id'
+			) THEN
+				ALTER TABLE wallet_transactions ADD COLUMN gift_id VARCHAR(100);
+			END IF;
+
+			-- Add recipient_id column if it doesn't exist
+			IF NOT EXISTS (
+				SELECT 1 FROM information_schema.columns 
+				WHERE table_name = 'wallet_transactions' AND column_name = 'recipient_id'
+			) THEN
+				ALTER TABLE wallet_transactions ADD COLUMN recipient_id VARCHAR(255);
+			END IF;
+
+			-- Add sender_id column if it doesn't exist
+			IF NOT EXISTS (
+				SELECT 1 FROM information_schema.columns 
+				WHERE table_name = 'wallet_transactions' AND column_name = 'sender_id'
+			) THEN
+				ALTER TABLE wallet_transactions ADD COLUMN sender_id VARCHAR(255);
+			END IF;
+		END $$;
+
+		-- Create indexes for new wallet_transactions columns
+		CREATE INDEX IF NOT EXISTS idx_wallet_transactions_gift_id ON wallet_transactions(gift_id) WHERE gift_id IS NOT NULL;
+		CREATE INDEX IF NOT EXISTS idx_wallet_transactions_recipient_id ON wallet_transactions(recipient_id) WHERE recipient_id IS NOT NULL;
+		CREATE INDEX IF NOT EXISTS idx_wallet_transactions_sender_id ON wallet_transactions(sender_id) WHERE sender_id IS NOT NULL;
+
+		-- 5. Create function to calculate platform commission
+		CREATE OR REPLACE FUNCTION calculate_platform_commission(
+			gift_price INTEGER,
+			commission_rate DECIMAL DEFAULT 30.00
+		)
+		RETURNS INTEGER AS $$
+		BEGIN
+			RETURN FLOOR((gift_price * commission_rate) / 100.0);
+		END;
+		$$ LANGUAGE plpgsql IMMUTABLE;
+
+		-- 6. Create function to calculate recipient amount
+		CREATE OR REPLACE FUNCTION calculate_recipient_amount(
+			gift_price INTEGER,
+			commission_rate DECIMAL DEFAULT 30.00
+		)
+		RETURNS INTEGER AS $$
+		BEGIN
+			RETURN gift_price - calculate_platform_commission(gift_price, commission_rate);
+		END;
+		$$ LANGUAGE plpgsql IMMUTABLE;
+
+		-- 7. Create function to get total platform revenue
+		CREATE OR REPLACE FUNCTION get_total_platform_revenue()
+		RETURNS TABLE(
+			total_commissions BIGINT,
+			total_gifts_facilitated BIGINT,
+			average_commission DECIMAL,
+			commission_rate DECIMAL
+		) AS $$
+		BEGIN
+			RETURN QUERY
+			SELECT 
+				COALESCE(SUM(commission_amount), 0) as total_commissions,
+				COUNT(*) as total_gifts_facilitated,
+				COALESCE(AVG(commission_amount), 0) as average_commission,
+				AVG(commission_rate) as commission_rate
+			FROM platform_commissions;
+		END;
+		$$ LANGUAGE plpgsql;
+
+		-- 8. Create function to get user gift statistics
+		CREATE OR REPLACE FUNCTION get_user_gift_stats(user_uid VARCHAR(255))
+		RETURNS TABLE(
+			gifts_sent BIGINT,
+			gifts_received BIGINT,
+			total_spent INTEGER,
+			total_earned INTEGER,
+			favorite_gift_to_send VARCHAR(100),
+			favorite_gift_received VARCHAR(100)
+		) AS $$
+		BEGIN
+			RETURN QUERY
+			SELECT 
+				COUNT(*) FILTER (WHERE gt.sender_id = user_uid) as gifts_sent,
+				COUNT(*) FILTER (WHERE gt.recipient_id = user_uid) as gifts_received,
+				COALESCE(SUM(gt.sender_paid) FILTER (WHERE gt.sender_id = user_uid), 0)::INTEGER as total_spent,
+				COALESCE(SUM(gt.recipient_received) FILTER (WHERE gt.recipient_id = user_uid), 0)::INTEGER as total_earned,
+				(
+					SELECT gift_name 
+					FROM gift_transactions 
+					WHERE sender_id = user_uid 
+					GROUP BY gift_name 
+					ORDER BY COUNT(*) DESC 
+					LIMIT 1
+				) as favorite_gift_to_send,
+				(
+					SELECT gift_name 
+					FROM gift_transactions 
+					WHERE recipient_id = user_uid 
+					GROUP BY gift_name 
+					ORDER BY COUNT(*) DESC 
+					LIMIT 1
+				) as favorite_gift_received
+			FROM gift_transactions gt;
+		END;
+		$$ LANGUAGE plpgsql;
+
+		-- 9. Create materialized view for top gift givers (leaderboard)
+		CREATE MATERIALIZED VIEW IF NOT EXISTS top_gift_givers AS
+		SELECT 
+			sender_id,
+			sender_name,
+			COUNT(*) as gifts_sent,
+			SUM(sender_paid) as total_spent,
+			AVG(sender_paid) as avg_gift_value,
+			MAX(created_at) as last_gift_sent
+		FROM gift_transactions
+		WHERE created_at >= NOW() - INTERVAL '30 days'
+		GROUP BY sender_id, sender_name
+		ORDER BY total_spent DESC
+		LIMIT 100;
+
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_top_gift_givers_sender_id ON top_gift_givers(sender_id);
+
+		-- 10. Create materialized view for top gift receivers (leaderboard)
+		CREATE MATERIALIZED VIEW IF NOT EXISTS top_gift_receivers AS
+		SELECT 
+			recipient_id,
+			recipient_name,
+			COUNT(*) as gifts_received,
+			SUM(recipient_received) as total_earned,
+			AVG(recipient_received) as avg_gift_value,
+			MAX(created_at) as last_gift_received
+		FROM gift_transactions
+		WHERE created_at >= NOW() - INTERVAL '30 days'
+		GROUP BY recipient_id, recipient_name
+		ORDER BY total_earned DESC
+		LIMIT 100;
+
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_top_gift_receivers_recipient_id ON top_gift_receivers(recipient_id);
+
+		-- 11. Create function to refresh gift leaderboards
+		CREATE OR REPLACE FUNCTION refresh_gift_leaderboards()
+		RETURNS VOID AS $$
+		BEGIN
+			REFRESH MATERIALIZED VIEW CONCURRENTLY top_gift_givers;
+			REFRESH MATERIALIZED VIEW CONCURRENTLY top_gift_receivers;
+		END;
+		$$ LANGUAGE plpgsql;
+
+		-- 12. Add comments for documentation
+		COMMENT ON TABLE gift_transactions IS 'Records all virtual gift transactions between users';
+		COMMENT ON TABLE platform_commissions IS 'Tracks platform revenue from gift commissions (30% of each gift)';
+		COMMENT ON COLUMN users.gifts_sent_count IS 'Total number of gifts sent by user';
+		COMMENT ON COLUMN users.gifts_received_count IS 'Total number of gifts received by user';
+		COMMENT ON COLUMN users.total_coins_spent_on_gifts IS 'Total coins spent sending gifts';
+		COMMENT ON COLUMN users.total_coins_earned_from_gifts IS 'Total coins earned from received gifts (after 30% commission)';
+		COMMENT ON FUNCTION calculate_platform_commission IS 'Calculates platform commission (default 30%) from gift price';
+		COMMENT ON FUNCTION calculate_recipient_amount IS 'Calculates amount recipient receives (gift price - 30% commission)';
+
+		-- 13. Initialize gift counts for existing users
+		UPDATE users 
+		SET 
+			gifts_sent_count = 0,
+			gifts_received_count = 0,
+			total_coins_spent_on_gifts = 0,
+			total_coins_earned_from_gifts = 0
+		WHERE 
+			gifts_sent_count IS NULL OR 
+			gifts_received_count IS NULL OR
+			total_coins_spent_on_gifts IS NULL OR
+			total_coins_earned_from_gifts IS NULL;
+	`,
+		},
+		{
+			Version: "015_allow_all_users_to_post",
+			Query: `
+		-- ===============================
+		-- ✅ ALLOW ALL AUTHENTICATED USERS TO POST VIDEOS
+		-- ===============================
+		
+		-- Drop the role-based posting restriction trigger
+		DROP TRIGGER IF EXISTS trigger_check_user_can_post_video ON videos;
+		
+		-- Drop the old role-checking functions
+		DROP FUNCTION IF EXISTS check_user_can_post_video();
+		DROP FUNCTION IF EXISTS validate_user_can_post(VARCHAR);
+		
+		-- Create new function that only checks if user is active
+		CREATE OR REPLACE FUNCTION validate_user_is_active(user_uid VARCHAR(255))
+		RETURNS BOOLEAN AS $$
+		DECLARE
+			user_active BOOLEAN;
+		BEGIN
+			SELECT is_active INTO user_active FROM users WHERE uid = user_uid;
+			RETURN COALESCE(user_active, FALSE);
+		END;
+		$$ LANGUAGE plpgsql;
+		
+		-- Create new trigger function that only validates user is active
+		CREATE OR REPLACE FUNCTION check_user_is_active_for_video()
+		RETURNS TRIGGER AS $$
+		BEGIN
+			IF NOT validate_user_is_active(NEW.user_id) THEN
+				RAISE EXCEPTION 'User account is inactive or does not exist';
+			END IF;
+			RETURN NEW;
+		END;
+		$$ LANGUAGE plpgsql;
+		
+		-- Create new trigger that only checks if user is active (not role)
+		CREATE TRIGGER trigger_check_user_is_active_for_video
+			BEFORE INSERT ON videos
+			FOR EACH ROW 
+			EXECUTE FUNCTION check_user_is_active_for_video();
+		
+		-- Add comment to document the change
+		COMMENT ON TRIGGER trigger_check_user_is_active_for_video ON videos IS 
+		'Validates that user account is active before allowing video creation. All active authenticated users can post videos regardless of role.';
+	`,
+		},
 	}
 
 	for _, migration := range migrations {
@@ -1113,6 +1500,12 @@ func RunMigrations(db *sqlx.DB) error {
 	log.Println("   • 💡 Real-time search suggestions")
 	log.Println("   • 📊 Popular search terms tracking")
 	log.Println("   • 🎯 Advanced search filters (media type, price, verification)")
+	log.Println("   • 🎁 Virtual Gift System:")
+	log.Println("      - Gift transactions tracking")
+	log.Println("      - Platform commission system (30%)")
+	log.Println("      - User gift statistics (sent/received/spent/earned)")
+	log.Println("      - Gift leaderboards (top givers & receivers)")
+	log.Println("      - Wallet integration for gift payments")
 	log.Println("   • Database triggers for role validation")
 	return nil
 }

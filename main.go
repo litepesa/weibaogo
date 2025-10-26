@@ -1,5 +1,5 @@
 // ===============================
-// main.go - Video Social Media App with Simplified Fuzzy Search + History
+// main.go - Video Social Media App with Simplified Fuzzy Search + History + Gift System
 // ===============================
 
 package main
@@ -206,6 +206,7 @@ func main() {
 	walletService := services.NewWalletService(db)
 	userService := services.NewUserService(db)
 	uploadService := services.NewUploadService(r2Client)
+	giftService := services.NewGiftService(db, walletService) // 🎁 Gift service
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(firebaseService)
@@ -213,6 +214,7 @@ func main() {
 	videoHandler := handlers.NewVideoHandler(videoService, userService)
 	walletHandler := handlers.NewWalletHandler(walletService)
 	uploadHandler := handlers.NewUploadHandler(uploadService)
+	giftHandler := handlers.NewGiftHandler(giftService) // 🎁 Gift handler
 
 	// Initialize rate limiter
 	rateLimiter := NewRateLimiter()
@@ -235,6 +237,7 @@ func main() {
 				"streaming_headers":  true,
 				"url_optimization":   true,
 				"fuzzy_search":       true,
+				"virtual_gifts":      true,
 			},
 			"search_features": gin.H{
 				"fuzzy_matching":   true,
@@ -244,6 +247,12 @@ func main() {
 				"tag_search":       true,
 				"popular_terms":    true,
 				"simple_interface": true,
+			},
+			"gift_features": gin.H{
+				"virtual_gifts":       true,
+				"platform_commission": "30%",
+				"gift_catalog":        "80+ gifts",
+				"leaderboards":        true,
 			},
 			"database_stats": gin.H{
 				"open_connections": dbStats.OpenConnections,
@@ -256,7 +265,7 @@ func main() {
 	})
 
 	// Setup routes
-	setupRoutes(router, firebaseService, authHandler, userHandler, videoHandler, walletHandler, uploadHandler)
+	setupRoutes(router, firebaseService, authHandler, userHandler, videoHandler, walletHandler, uploadHandler, giftHandler)
 
 	// Start server
 	port := cfg.Port
@@ -265,6 +274,12 @@ func main() {
 	log.Printf("💾 Database connected with optimized pool (Max: 50, Idle: 25)")
 	log.Printf("🔥 Firebase service initialized")
 	log.Printf("☁️  R2 storage initialized")
+	log.Printf("🎁 Virtual Gift System:")
+	log.Printf("   • 80+ virtual gifts (common to ultimate)")
+	log.Printf("   • Platform commission: 30%%")
+	log.Printf("   • Gift transactions tracking")
+	log.Printf("   • Leaderboards (top senders & receivers)")
+	log.Printf("   • Real-time balance updates")
 	log.Printf("🔍 Simplified Fuzzy Search:")
 	log.Printf("   • Searches: username, caption, tags")
 	log.Printf("   • Fuzzy matching: 'dress' finds 'dresses'")
@@ -338,6 +353,7 @@ func setupRoutes(
 	videoHandler *handlers.VideoHandler,
 	walletHandler *handlers.WalletHandler,
 	uploadHandler *handlers.UploadHandler,
+	giftHandler *handlers.GiftHandler,
 ) {
 	api := router.Group("/api/v1")
 
@@ -388,6 +404,9 @@ func setupRoutes(
 		public.GET("/users/:userId/following", videoHandler.GetUserFollowing)
 		public.GET("/users", userHandler.GetAllUsers)
 		public.GET("/users/search", userHandler.SearchUsers)
+
+		// 🎁 PUBLIC GIFT ENDPOINTS
+		public.GET("/gifts/catalog", giftHandler.GetGiftCatalog) // View available gifts
 	}
 
 	// ===============================
@@ -443,6 +462,22 @@ func setupRoutes(
 		protected.GET("/wallet/:userId/transactions", walletHandler.GetTransactions)
 		protected.POST("/wallet/:userId/purchase-request", walletHandler.CreatePurchaseRequest)
 
+		// 🎁 GIFT SYSTEM ROUTES
+		gifts := protected.Group("/gifts")
+		{
+			// Send & Transaction Management
+			gifts.POST("/send", giftHandler.SendGift)                                // Send a gift
+			gifts.GET("/transaction/:transactionId", giftHandler.GetGiftTransaction) // Get specific transaction
+
+			// User Gift History & Stats
+			gifts.GET("/history/:userId", giftHandler.GetGiftHistory) // Get user's gift history
+			gifts.GET("/stats/:userId", giftHandler.GetGiftStats)     // Get user's gift statistics
+
+			// Leaderboards (Public visibility for gamification)
+			gifts.GET("/leaderboard/senders", giftHandler.GetTopGiftSenders)     // Top gift senders
+			gifts.GET("/leaderboard/receivers", giftHandler.GetTopGiftReceivers) // Top gift receivers
+		}
+
 		// UPLOAD
 		protected.POST("/upload", uploadHandler.UploadFile)
 		protected.POST("/upload/batch", uploadHandler.BatchUploadFiles)
@@ -481,6 +516,18 @@ func setupRoutes(
 			admin.POST("/admin/purchase-requests/:requestId/approve", walletHandler.ApprovePurchase)
 			admin.POST("/admin/purchase-requests/:requestId/reject", walletHandler.RejectPurchase)
 
+			// 🎁 GIFT SYSTEM ADMIN
+			adminGifts := admin.Group("/admin/gifts")
+			{
+				// Platform Revenue & Analytics
+				adminGifts.GET("/commission/summary", giftHandler.GetPlatformCommissionSummary) // Platform earnings
+				adminGifts.GET("/leaderboard/senders", giftHandler.GetTopGiftSenders)           // Admin view of top senders
+				adminGifts.GET("/leaderboard/receivers", giftHandler.GetTopGiftReceivers)       // Admin view of top receivers
+
+				// Gift System Management
+				adminGifts.GET("/catalog", giftHandler.GetGiftCatalog) // View gift catalog with commission details
+			}
+
 			// PLATFORM STATS
 			admin.GET("/admin/stats", func(c *gin.Context) {
 				c.Header("Cache-Control", "public, max-age=300")
@@ -492,6 +539,7 @@ func setupRoutes(
 						"videos":           "enabled",
 						"fuzzy_search":     "enabled",
 						"search_history":   "enabled",
+						"virtual_gifts":    "enabled",
 						"gzip_compression": true,
 						"rate_limiting":    true,
 					},
@@ -502,6 +550,16 @@ func setupRoutes(
 						"suggestions":   false,
 						"popular_terms": true,
 						"filter_option": "All Users (username only)",
+					},
+					"gifts": gin.H{
+						"enabled":             true,
+						"total_gifts":         80,
+						"commission_rate":     "30%",
+						"rarity_levels":       7,
+						"min_price":           10,
+						"max_price":           100000,
+						"leaderboards":        true,
+						"transaction_history": true,
 					},
 					"status": "operational",
 					"performance": gin.H{
@@ -536,11 +594,16 @@ func setupRoutes(
 						"trigram_extension": true,
 						"history_enabled":   true,
 					},
+					"gifts": gin.H{
+						"status":          "enabled",
+						"catalog_loaded":  true,
+						"commission_rate": 30.0,
+					},
 					"app": gin.H{
 						"name":     "video-social-simple-search",
 						"version":  "2.0.0-simple",
 						"status":   "healthy",
-						"features": []string{"videos", "wallet", "social", "fuzzy-search", "history"},
+						"features": []string{"videos", "wallet", "social", "fuzzy-search", "history", "virtual-gifts"},
 					},
 				})
 			})
@@ -590,6 +653,46 @@ func setupRoutes(
 						"GET /videos/search?q=john (finds @john, captions with john, #john)",
 						"GET /videos/search?q=cooking&usernameOnly=true (only @cooking users)",
 						"GET /search/history (user's search history)",
+					},
+				})
+			})
+
+			debug.GET("/gifts", func(c *gin.Context) {
+				c.JSON(200, gin.H{
+					"gift_system": gin.H{
+						"version":     "1.0.0",
+						"status":      "enabled",
+						"description": "Virtual gift system with platform commissions",
+					},
+					"features": gin.H{
+						"total_gifts":         80,
+						"rarity_levels":       []string{"common", "uncommon", "rare", "epic", "legendary", "mythic", "ultimate"},
+						"commission_rate":     "30%",
+						"wallet_integration":  true,
+						"transaction_history": true,
+						"leaderboards":        true,
+						"real_time_updates":   true,
+					},
+					"endpoints": gin.H{
+						"catalog":          "GET /gifts/catalog",
+						"send_gift":        "POST /gifts/send",
+						"gift_history":     "GET /gifts/history/:userId",
+						"gift_stats":       "GET /gifts/stats/:userId",
+						"top_senders":      "GET /gifts/leaderboard/senders",
+						"top_receivers":    "GET /gifts/leaderboard/receivers",
+						"transaction":      "GET /gifts/transaction/:transactionId",
+						"admin_commission": "GET /admin/gifts/commission/summary",
+					},
+					"examples": []string{
+						"POST /gifts/send {recipientId, giftId, message}",
+						"GET /gifts/catalog (view all 80+ gifts)",
+						"GET /gifts/history/user123 (user's gift transactions)",
+						"GET /gifts/leaderboard/senders?limit=10 (top 10 gift senders)",
+					},
+					"commission": gin.H{
+						"rate":        30.0,
+						"description": "Platform takes 30% commission on each gift",
+						"example":     "100 coin gift = 70 coins to recipient, 30 coins to platform",
 					},
 				})
 			})
