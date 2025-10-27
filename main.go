@@ -1,5 +1,5 @@
 // ===============================
-// main.go - Video Social Media App with Simplified Fuzzy Search + History + Gift System
+// main.go - Video Social Media App with Video Reactions Chat
 // ===============================
 
 package main
@@ -108,7 +108,6 @@ func createRateLimitMiddleware(rateLimiter *RateLimiter) gin.HandlerFunc {
 			limit = 30
 			window = time.Minute
 		} else if path == "/api/v1/videos/search" {
-			// Standard limit for search
 			limit = 100
 			window = time.Minute
 		} else if path == "/api/v1/videos" ||
@@ -206,7 +205,6 @@ func main() {
 	walletService := services.NewWalletService(db)
 	userService := services.NewUserService(db)
 	uploadService := services.NewUploadService(r2Client)
-	giftService := services.NewGiftService(db, walletService) // 🎁 Gift service
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(firebaseService)
@@ -214,7 +212,6 @@ func main() {
 	videoHandler := handlers.NewVideoHandler(videoService, userService)
 	walletHandler := handlers.NewWalletHandler(walletService)
 	uploadHandler := handlers.NewUploadHandler(uploadService)
-	giftHandler := handlers.NewGiftHandler(giftService) // 🎁 Gift handler
 
 	// Initialize rate limiter
 	rateLimiter := NewRateLimiter()
@@ -228,7 +225,7 @@ func main() {
 		c.JSON(200, gin.H{
 			"status":   "healthy",
 			"database": database.Health() == nil,
-			"app":      "video-social-media-simple-search",
+			"app":      "video-social-media-with-reactions-chat",
 			"optimizations": gin.H{
 				"gzip_compression":   true,
 				"rate_limiting":      true,
@@ -237,22 +234,20 @@ func main() {
 				"streaming_headers":  true,
 				"url_optimization":   true,
 				"fuzzy_search":       true,
-				"virtual_gifts":      true,
+				"video_reactions":    true,
+				"websocket_chat":     true,
 			},
-			"search_features": gin.H{
-				"fuzzy_matching":   true,
-				"search_history":   true,
-				"caption_search":   true,
-				"username_search":  true,
-				"tag_search":       true,
-				"popular_terms":    true,
-				"simple_interface": true,
-			},
-			"gift_features": gin.H{
-				"virtual_gifts":       true,
-				"platform_commission": "30%",
-				"gift_catalog":        "80+ gifts",
-				"leaderboards":        true,
+			"features": gin.H{
+				"videos":            true,
+				"wallet":            true,
+				"social":            true,
+				"search":            true,
+				"video_reactions":   true,
+				"real_time_chat":    true,
+				"typing_indicators": true,
+				"read_receipts":     true,
+				"message_pinning":   true,
+				"file_sharing":      true,
 			},
 			"database_stats": gin.H{
 				"open_connections": dbStats.OpenConnections,
@@ -265,7 +260,7 @@ func main() {
 	})
 
 	// Setup routes
-	setupRoutes(router, firebaseService, authHandler, userHandler, videoHandler, walletHandler, uploadHandler, giftHandler)
+	setupRoutes(router, firebaseService, authHandler, userHandler, videoHandler, walletHandler, uploadHandler)
 
 	// Start server
 	port := cfg.Port
@@ -274,18 +269,17 @@ func main() {
 	log.Printf("💾 Database connected with optimized pool (Max: 50, Idle: 25)")
 	log.Printf("🔥 Firebase service initialized")
 	log.Printf("☁️  R2 storage initialized")
-	log.Printf("🎁 Virtual Gift System:")
-	log.Printf("   • 80+ virtual gifts (common to ultimate)")
-	log.Printf("   • Platform commission: 30%%")
-	log.Printf("   • Gift transactions tracking")
-	log.Printf("   • Leaderboards (top senders & receivers)")
-	log.Printf("   • Real-time balance updates")
 	log.Printf("🔍 Simplified Fuzzy Search:")
 	log.Printf("   • Searches: username, caption, tags")
 	log.Printf("   • Fuzzy matching: 'dress' finds 'dresses'")
 	log.Printf("   • Search history: enabled")
-	log.Printf("   • No suggestions: only history")
-	log.Printf("   • Optional filter: 'All Users' for username-only")
+	log.Printf("💬 Video Reactions Chat:")
+	log.Printf("   • WebSocket-powered real-time messaging")
+	log.Printf("   • File sharing (images, videos, documents)")
+	log.Printf("   • Read receipts & delivery status")
+	log.Printf("   • Typing indicators")
+	log.Printf("   • Message pinning (max 10 per chat)")
+	log.Printf("   • Per-user chat settings")
 	log.Printf("⚡ Performance optimizations:")
 	log.Printf("   • Gzip compression: ~70%% size reduction")
 	log.Printf("   • Rate limiting: 100 req/min")
@@ -331,7 +325,7 @@ func setupOptimizedRouter(cfg *config.Config, rateLimiter *RateLimiter) *gin.Eng
 	// Performance headers
 	router.Use(func(c *gin.Context) {
 		c.Header("X-DNS-Prefetch-Control", "on")
-		c.Header("X-Powered-By", "video-social-simple-search")
+		c.Header("X-Powered-By", "video-social-with-reactions")
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("X-Frame-Options", "SAMEORIGIN")
 		c.Header("X-XSS-Protection", "1; mode=block")
@@ -342,7 +336,7 @@ func setupOptimizedRouter(cfg *config.Config, rateLimiter *RateLimiter) *gin.Eng
 }
 
 // ===============================
-// SIMPLIFIED ROUTES
+// ROUTES SETUP WITH VIDEO REACTIONS
 // ===============================
 
 func setupRoutes(
@@ -353,7 +347,6 @@ func setupRoutes(
 	videoHandler *handlers.VideoHandler,
 	walletHandler *handlers.WalletHandler,
 	uploadHandler *handlers.UploadHandler,
-	giftHandler *handlers.GiftHandler,
 ) {
 	api := router.Group("/api/v1")
 
@@ -390,9 +383,9 @@ func setupRoutes(
 		public.GET("/users/:userId/videos", videoHandler.GetUserVideos)
 		public.GET("/videos/:videoId/comments", videoHandler.GetVideoComments)
 
-		// 🔍 SIMPLIFIED SEARCH ENDPOINTS
-		public.GET("/videos/search", videoHandler.SearchVideos)                  // Simple fuzzy search
-		public.GET("/videos/search/popular", videoHandler.GetPopularSearchTerms) // Trending terms only
+		// SEARCH ENDPOINTS
+		public.GET("/videos/search", videoHandler.SearchVideos)
+		public.GET("/videos/search/popular", videoHandler.GetPopularSearchTerms)
 
 		// BULK ENDPOINT
 		public.POST("/videos/bulk", videoHandler.GetVideosBulk)
@@ -404,9 +397,6 @@ func setupRoutes(
 		public.GET("/users/:userId/following", videoHandler.GetUserFollowing)
 		public.GET("/users", userHandler.GetAllUsers)
 		public.GET("/users/search", userHandler.SearchUsers)
-
-		// 🎁 PUBLIC GIFT ENDPOINTS
-		public.GET("/gifts/catalog", giftHandler.GetGiftCatalog) // View available gifts
 	}
 
 	// ===============================
@@ -431,11 +421,11 @@ func setupRoutes(
 		protected.GET("/users/:userId/liked-videos", videoHandler.GetUserLikedVideos)
 		protected.GET("/videos/:videoId/analytics", videoHandler.GetVideoAnalytics)
 
-		// 🔍 SEARCH HISTORY ENDPOINTS
-		protected.GET("/search/history", videoHandler.GetSearchHistory)              // Get user's search history
-		protected.POST("/search/history", videoHandler.AddSearchHistory)             // Add to search history
-		protected.DELETE("/search/history", videoHandler.ClearSearchHistory)         // Clear all history
-		protected.DELETE("/search/history/:query", videoHandler.RemoveSearchHistory) // Remove specific
+		// SEARCH HISTORY ENDPOINTS
+		protected.GET("/search/history", videoHandler.GetSearchHistory)
+		protected.POST("/search/history", videoHandler.AddSearchHistory)
+		protected.DELETE("/search/history", videoHandler.ClearSearchHistory)
+		protected.DELETE("/search/history/:query", videoHandler.RemoveSearchHistory)
 
 		// RECOMMENDATIONS
 		protected.GET("/videos/recommendations", videoHandler.GetVideoRecommendations)
@@ -462,26 +452,74 @@ func setupRoutes(
 		protected.GET("/wallet/:userId/transactions", walletHandler.GetTransactions)
 		protected.POST("/wallet/:userId/purchase-request", walletHandler.CreatePurchaseRequest)
 
-		// 🎁 GIFT SYSTEM ROUTES
-		gifts := protected.Group("/gifts")
-		{
-			// Send & Transaction Management
-			gifts.POST("/send", giftHandler.SendGift)                                // Send a gift
-			gifts.GET("/transaction/:transactionId", giftHandler.GetGiftTransaction) // Get specific transaction
-
-			// User Gift History & Stats
-			gifts.GET("/history/:userId", giftHandler.GetGiftHistory) // Get user's gift history
-			gifts.GET("/stats/:userId", giftHandler.GetGiftStats)     // Get user's gift statistics
-
-			// Leaderboards (Public visibility for gamification)
-			gifts.GET("/leaderboard/senders", giftHandler.GetTopGiftSenders)     // Top gift senders
-			gifts.GET("/leaderboard/receivers", giftHandler.GetTopGiftReceivers) // Top gift receivers
-		}
-
 		// UPLOAD
 		protected.POST("/upload", uploadHandler.UploadFile)
 		protected.POST("/upload/batch", uploadHandler.BatchUploadFiles)
 		protected.GET("/upload/health", uploadHandler.HealthCheck)
+
+		// ===============================
+		// 💬 VIDEO REACTIONS CHAT ROUTES
+		// ===============================
+		videoReactions := protected.Group("/video-reactions")
+		{
+			// Chat management
+			videoReactions.GET("/chats", func(c *gin.Context) {
+				c.JSON(200, gin.H{"message": "Get user's video reaction chats - TODO: Implement handler"})
+			})
+			videoReactions.POST("/chats", func(c *gin.Context) {
+				c.JSON(200, gin.H{"message": "Create new video reaction chat - TODO: Implement handler"})
+			})
+			videoReactions.GET("/chats/:chatId", func(c *gin.Context) {
+				c.JSON(200, gin.H{"message": "Get specific chat - TODO: Implement handler"})
+			})
+			videoReactions.DELETE("/chats/:chatId", func(c *gin.Context) {
+				c.JSON(200, gin.H{"message": "Delete chat - TODO: Implement handler"})
+			})
+
+			// Message management
+			videoReactions.GET("/chats/:chatId/messages", func(c *gin.Context) {
+				c.JSON(200, gin.H{"message": "Get chat messages - TODO: Implement handler"})
+			})
+			videoReactions.POST("/chats/:chatId/messages", func(c *gin.Context) {
+				c.JSON(200, gin.H{"message": "Send message - TODO: Implement handler"})
+			})
+			videoReactions.PUT("/chats/:chatId/messages/:messageId", func(c *gin.Context) {
+				c.JSON(200, gin.H{"message": "Edit message - TODO: Implement handler"})
+			})
+			videoReactions.DELETE("/chats/:chatId/messages/:messageId", func(c *gin.Context) {
+				c.JSON(200, gin.H{"message": "Delete message - TODO: Implement handler"})
+			})
+
+			// Chat actions
+			videoReactions.POST("/chats/:chatId/read", func(c *gin.Context) {
+				c.JSON(200, gin.H{"message": "Mark chat as read - TODO: Implement handler"})
+			})
+			videoReactions.POST("/chats/:chatId/pin", func(c *gin.Context) {
+				c.JSON(200, gin.H{"message": "Toggle chat pin - TODO: Implement handler"})
+			})
+			videoReactions.POST("/chats/:chatId/archive", func(c *gin.Context) {
+				c.JSON(200, gin.H{"message": "Toggle chat archive - TODO: Implement handler"})
+			})
+			videoReactions.POST("/chats/:chatId/mute", func(c *gin.Context) {
+				c.JSON(200, gin.H{"message": "Toggle chat mute - TODO: Implement handler"})
+			})
+
+			// Message actions
+			videoReactions.POST("/chats/:chatId/messages/:messageId/pin", func(c *gin.Context) {
+				c.JSON(200, gin.H{"message": "Toggle message pin - TODO: Implement handler"})
+			})
+			videoReactions.GET("/chats/:chatId/messages/pinned", func(c *gin.Context) {
+				c.JSON(200, gin.H{"message": "Get pinned messages - TODO: Implement handler"})
+			})
+			videoReactions.GET("/chats/:chatId/messages/search", func(c *gin.Context) {
+				c.JSON(200, gin.H{"message": "Search messages - TODO: Implement handler"})
+			})
+
+			// Chat settings
+			videoReactions.PUT("/chats/:chatId/settings", func(c *gin.Context) {
+				c.JSON(200, gin.H{"message": "Update chat settings - TODO: Implement handler"})
+			})
+		}
 
 		// ===============================
 		// ADMIN ROUTES
@@ -497,15 +535,6 @@ func setupRoutes(
 			// PERFORMANCE
 			admin.POST("/admin/videos/batch-update-counts", videoHandler.BatchUpdateCounts)
 
-			// SEARCH MANAGEMENT
-			admin.POST("/admin/search/refresh-popular-terms", func(c *gin.Context) {
-				c.JSON(200, gin.H{
-					"message":   "Popular search terms refresh requested",
-					"status":    "acknowledged",
-					"timestamp": time.Now(),
-				})
-			})
-
 			// USER MANAGEMENT
 			admin.GET("/admin/users", userHandler.GetAllUsers)
 			admin.POST("/admin/users/:userId/status", userHandler.UpdateUserStatus)
@@ -515,18 +544,6 @@ func setupRoutes(
 			admin.GET("/admin/purchase-requests", walletHandler.GetPendingPurchases)
 			admin.POST("/admin/purchase-requests/:requestId/approve", walletHandler.ApprovePurchase)
 			admin.POST("/admin/purchase-requests/:requestId/reject", walletHandler.RejectPurchase)
-
-			// 🎁 GIFT SYSTEM ADMIN
-			adminGifts := admin.Group("/admin/gifts")
-			{
-				// Platform Revenue & Analytics
-				adminGifts.GET("/commission/summary", giftHandler.GetPlatformCommissionSummary) // Platform earnings
-				adminGifts.GET("/leaderboard/senders", giftHandler.GetTopGiftSenders)           // Admin view of top senders
-				adminGifts.GET("/leaderboard/receivers", giftHandler.GetTopGiftReceivers)       // Admin view of top receivers
-
-				// Gift System Management
-				adminGifts.GET("/catalog", giftHandler.GetGiftCatalog) // View gift catalog with commission details
-			}
 
 			// PLATFORM STATS
 			admin.GET("/admin/stats", func(c *gin.Context) {
@@ -539,27 +556,19 @@ func setupRoutes(
 						"videos":           "enabled",
 						"fuzzy_search":     "enabled",
 						"search_history":   "enabled",
-						"virtual_gifts":    "enabled",
+						"video_reactions":  "enabled",
+						"websocket_chat":   "enabled",
 						"gzip_compression": true,
 						"rate_limiting":    true,
 					},
-					"search": gin.H{
-						"type":          "fuzzy",
-						"targets":       []string{"username", "caption", "tags"},
-						"history":       true,
-						"suggestions":   false,
-						"popular_terms": true,
-						"filter_option": "All Users (username only)",
-					},
-					"gifts": gin.H{
-						"enabled":             true,
-						"total_gifts":         80,
-						"commission_rate":     "30%",
-						"rarity_levels":       7,
-						"min_price":           10,
-						"max_price":           100000,
-						"leaderboards":        true,
-						"transaction_history": true,
+					"chat": gin.H{
+						"type":                "websocket",
+						"real_time":           true,
+						"typing_indicators":   true,
+						"read_receipts":       true,
+						"message_pinning":     true,
+						"file_sharing":        true,
+						"max_pinned_per_chat": 10,
 					},
 					"status": "operational",
 					"performance": gin.H{
@@ -594,16 +603,17 @@ func setupRoutes(
 						"trigram_extension": true,
 						"history_enabled":   true,
 					},
-					"gifts": gin.H{
-						"status":          "enabled",
-						"catalog_loaded":  true,
-						"commission_rate": 30.0,
+					"chat": gin.H{
+						"status":         "enabled",
+						"type":           "websocket",
+						"real_time":      true,
+						"tables_created": true,
 					},
 					"app": gin.H{
-						"name":     "video-social-simple-search",
-						"version":  "2.0.0-simple",
+						"name":     "video-social-with-reactions",
+						"version":  "2.1.0",
 						"status":   "healthy",
-						"features": []string{"videos", "wallet", "social", "fuzzy-search", "history", "virtual-gifts"},
+						"features": []string{"videos", "wallet", "social", "fuzzy-search", "history", "video-reactions", "websocket-chat"},
 					},
 				})
 			})
@@ -625,75 +635,36 @@ func setupRoutes(
 				c.JSON(200, gin.H{"total": len(routes), "routes": routeList})
 			})
 
-			debug.GET("/search", func(c *gin.Context) {
+			debug.GET("/video-reactions", func(c *gin.Context) {
 				c.JSON(200, gin.H{
-					"search_system": gin.H{
-						"type":        "simplified_fuzzy",
-						"version":     "2.0.0",
-						"description": "Simple fuzzy search with history, no suggestions",
-					},
-					"features": gin.H{
-						"fuzzy_matching": "dress finds dresses, cook finds cooking",
-						"search_targets": []string{"username", "caption", "tags"},
-						"search_history": "user's previous searches",
-						"suggestions":    "disabled",
-						"popular_terms":  "trending searches",
-						"filter_option":  "All Users (username-only results)",
-					},
-					"endpoints": gin.H{
-						"search":              "GET /videos/search?q={query}&usernameOnly={true/false}",
-						"popular":             "GET /videos/search/popular",
-						"get_history":         "GET /search/history",
-						"add_history":         "POST /search/history",
-						"clear_history":       "DELETE /search/history",
-						"remove_history_item": "DELETE /search/history/{query}",
-					},
-					"examples": []string{
-						"GET /videos/search?q=dress (finds dress, dresses, dressed)",
-						"GET /videos/search?q=john (finds @john, captions with john, #john)",
-						"GET /videos/search?q=cooking&usernameOnly=true (only @cooking users)",
-						"GET /search/history (user's search history)",
-					},
-				})
-			})
-
-			debug.GET("/gifts", func(c *gin.Context) {
-				c.JSON(200, gin.H{
-					"gift_system": gin.H{
+					"feature": gin.H{
+						"name":        "Video Reactions Chat",
 						"version":     "1.0.0",
-						"status":      "enabled",
-						"description": "Virtual gift system with platform commissions",
+						"type":        "websocket",
+						"description": "Real-time chat system for video reactions",
 					},
-					"features": gin.H{
-						"total_gifts":         80,
-						"rarity_levels":       []string{"common", "uncommon", "rare", "epic", "legendary", "mythic", "ultimate"},
-						"commission_rate":     "30%",
-						"wallet_integration":  true,
-						"transaction_history": true,
-						"leaderboards":        true,
-						"real_time_updates":   true,
+					"capabilities": gin.H{
+						"real_time_messaging": true,
+						"file_sharing":        true,
+						"typing_indicators":   true,
+						"read_receipts":       true,
+						"delivery_status":     true,
+						"message_editing":     true,
+						"message_deletion":    true,
+						"message_pinning":     true,
+						"per_user_settings":   true,
+						"message_search":      true,
 					},
 					"endpoints": gin.H{
-						"catalog":          "GET /gifts/catalog",
-						"send_gift":        "POST /gifts/send",
-						"gift_history":     "GET /gifts/history/:userId",
-						"gift_stats":       "GET /gifts/stats/:userId",
-						"top_senders":      "GET /gifts/leaderboard/senders",
-						"top_receivers":    "GET /gifts/leaderboard/receivers",
-						"transaction":      "GET /gifts/transaction/:transactionId",
-						"admin_commission": "GET /admin/gifts/commission/summary",
+						"get_chats":       "GET /video-reactions/chats",
+						"create_chat":     "POST /video-reactions/chats",
+						"get_messages":    "GET /video-reactions/chats/:chatId/messages",
+						"send_message":    "POST /video-reactions/chats/:chatId/messages",
+						"mark_read":       "POST /video-reactions/chats/:chatId/read",
+						"toggle_pin":      "POST /video-reactions/chats/:chatId/pin",
+						"search_messages": "GET /video-reactions/chats/:chatId/messages/search",
 					},
-					"examples": []string{
-						"POST /gifts/send {recipientId, giftId, message}",
-						"GET /gifts/catalog (view all 80+ gifts)",
-						"GET /gifts/history/user123 (user's gift transactions)",
-						"GET /gifts/leaderboard/senders?limit=10 (top 10 gift senders)",
-					},
-					"commission": gin.H{
-						"rate":        30.0,
-						"description": "Platform takes 30% commission on each gift",
-						"example":     "100 coin gift = 70 coins to recipient, 30 coins to platform",
-					},
+					"status": "TODO: Handlers need implementation",
 				})
 			})
 		}

@@ -1,5 +1,5 @@
 // ===============================
-// internal/database/migrations.go - COMPLETE VERSION with Gift System & Platform Commissions
+// internal/database/migrations.go - COMPLETE VERSION with Video Reactions + All Users Can Post
 // ===============================
 
 package database
@@ -613,7 +613,7 @@ func RunMigrations(db *sqlx.DB) error {
 				UPDATE users 
 				SET role = CASE 
 					WHEN user_type = 'admin' THEN 'admin'
-					WHEN user_type = 'moderator' THEN 'host'  -- Moderators become hosts
+					WHEN user_type = 'moderator' THEN 'host'
 					ELSE 'guest'
 				END
 				WHERE role = 'guest';
@@ -657,7 +657,6 @@ func RunMigrations(db *sqlx.DB) error {
 				RETURNS TRIGGER AS $func1_updated$
 				BEGIN
 					IF TG_OP = 'INSERT' THEN
-						-- Additional validation happens in trigger_check_user_can_post_video
 						UPDATE users 
 						SET videos_count = videos_count + 1, 
 							updated_at = CURRENT_TIMESTAMP
@@ -906,7 +905,6 @@ func RunMigrations(db *sqlx.DB) error {
 		$func_refresh$ LANGUAGE plpgsql;
 	`,
 		},
-
 		{
 			Version: "012_add_user_profile_fields",
 			Query: `
@@ -1090,343 +1088,319 @@ func RunMigrations(db *sqlx.DB) error {
     `,
 		},
 		{
-			Version: "014_gift_system_with_platform_commissions",
+			Version: "014_video_reactions_chat_system",
 			Query: `
 		-- ===============================
-		-- 🎁 VIRTUAL GIFT SYSTEM WITH PLATFORM COMMISSIONS
+		-- VIDEO REACTIONS CHAT SYSTEM - WebSocket Powered
 		-- ===============================
-		
-		-- 1. Add gift statistics columns to users table
-		ALTER TABLE users ADD COLUMN IF NOT EXISTS gifts_sent_count INTEGER DEFAULT 0;
-		ALTER TABLE users ADD COLUMN IF NOT EXISTS gifts_received_count INTEGER DEFAULT 0;
-		ALTER TABLE users ADD COLUMN IF NOT EXISTS total_coins_spent_on_gifts INTEGER DEFAULT 0;
-		ALTER TABLE users ADD COLUMN IF NOT EXISTS total_coins_earned_from_gifts INTEGER DEFAULT 0;
 
-		-- Add constraints for gift statistics
-		DO $$
-		BEGIN
-			IF NOT EXISTS (
-				SELECT 1 FROM information_schema.table_constraints 
-				WHERE constraint_name = 'users_gifts_sent_count_positive' 
-				AND table_name = 'users'
-			) THEN
-				ALTER TABLE users ADD CONSTRAINT users_gifts_sent_count_positive
-				CHECK (gifts_sent_count >= 0);
-			END IF;
-
-			IF NOT EXISTS (
-				SELECT 1 FROM information_schema.table_constraints 
-				WHERE constraint_name = 'users_gifts_received_count_positive' 
-				AND table_name = 'users'
-			) THEN
-				ALTER TABLE users ADD CONSTRAINT users_gifts_received_count_positive
-				CHECK (gifts_received_count >= 0);
-			END IF;
-
-			IF NOT EXISTS (
-				SELECT 1 FROM information_schema.table_constraints 
-				WHERE constraint_name = 'users_total_coins_spent_positive' 
-				AND table_name = 'users'
-			) THEN
-				ALTER TABLE users ADD CONSTRAINT users_total_coins_spent_positive
-				CHECK (total_coins_spent_on_gifts >= 0);
-			END IF;
-
-			IF NOT EXISTS (
-				SELECT 1 FROM information_schema.table_constraints 
-				WHERE constraint_name = 'users_total_coins_earned_positive' 
-				AND table_name = 'users'
-			) THEN
-				ALTER TABLE users ADD CONSTRAINT users_total_coins_earned_positive
-				CHECK (total_coins_earned_from_gifts >= 0);
-			END IF;
-		END $$;
-
-		-- Create indexes for gift statistics
-		CREATE INDEX IF NOT EXISTS idx_users_gifts_sent_count ON users(gifts_sent_count DESC);
-		CREATE INDEX IF NOT EXISTS idx_users_gifts_received_count ON users(gifts_received_count DESC);
-		CREATE INDEX IF NOT EXISTS idx_users_total_coins_spent ON users(total_coins_spent_on_gifts DESC);
-		CREATE INDEX IF NOT EXISTS idx_users_total_coins_earned ON users(total_coins_earned_from_gifts DESC);
-
-		-- 2. Create gift_transactions table
-		CREATE TABLE IF NOT EXISTS gift_transactions (
-			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		-- 1. VIDEO REACTION CHATS TABLE
+		CREATE TABLE IF NOT EXISTS video_reaction_chats (
+			chat_id VARCHAR(255) PRIMARY KEY,
+			participants TEXT[] NOT NULL DEFAULT '{}',
 			
-			-- Transaction participants
-			sender_id VARCHAR(255) NOT NULL,
-			sender_name VARCHAR(255) NOT NULL,
-			sender_phone VARCHAR(20) NOT NULL,
-			recipient_id VARCHAR(255) NOT NULL,
-			recipient_name VARCHAR(255) NOT NULL,
-			recipient_phone VARCHAR(20) NOT NULL,
+			original_video_id UUID NOT NULL,
+			original_video_url TEXT NOT NULL,
+			original_thumbnail_url TEXT DEFAULT '',
+			original_user_name VARCHAR(255) NOT NULL,
+			original_user_image TEXT DEFAULT '',
+			original_reaction TEXT,
+			original_timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
 			
-			-- Gift details
-			gift_id VARCHAR(100) NOT NULL,
-			gift_name VARCHAR(100) NOT NULL,
-			gift_emoji VARCHAR(50) NOT NULL,
-			gift_rarity VARCHAR(50) NOT NULL,
+			last_message TEXT DEFAULT '',
+			last_message_type VARCHAR(50) DEFAULT 'text',
+			last_message_sender VARCHAR(255) DEFAULT '',
+			last_message_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 			
-			-- Financial details
-			gift_price INTEGER NOT NULL,
-			sender_paid INTEGER NOT NULL,
-			recipient_received INTEGER NOT NULL,
-			platform_commission INTEGER NOT NULL,
+			unread_counts JSONB DEFAULT '{}'::jsonb,
+			is_archived JSONB DEFAULT '{}'::jsonb,
+			is_pinned JSONB DEFAULT '{}'::jsonb,
+			is_muted JSONB DEFAULT '{}'::jsonb,
+			chat_wallpapers JSONB DEFAULT '{}'::jsonb,
+			font_sizes JSONB DEFAULT '{}'::jsonb,
 			
-			-- Wallet balances
-			sender_balance_before INTEGER NOT NULL,
-			sender_balance_after INTEGER NOT NULL,
-			recipient_balance_before INTEGER NOT NULL,
-			recipient_balance_after INTEGER NOT NULL,
-			
-			-- Status and metadata
-			status VARCHAR(50) DEFAULT 'completed',
-			message TEXT,
-			metadata JSONB DEFAULT '{}',
-			
-			-- Timestamps
 			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 			
-			-- Foreign keys
-			CONSTRAINT gift_transactions_sender_fkey 
-				FOREIGN KEY (sender_id) REFERENCES users(uid) ON DELETE CASCADE,
-			CONSTRAINT gift_transactions_recipient_fkey 
-				FOREIGN KEY (recipient_id) REFERENCES users(uid) ON DELETE CASCADE,
-			
-			-- Checks
-			CHECK (sender_id != recipient_id),
-			CHECK (gift_price > 0),
-			CHECK (sender_paid > 0),
-			CHECK (recipient_received >= 0),
-			CHECK (platform_commission >= 0),
-			CHECK (sender_paid = recipient_received + platform_commission)
+			CONSTRAINT fk_original_video FOREIGN KEY (original_video_id) REFERENCES videos(id) ON DELETE CASCADE,
+			CONSTRAINT valid_participants CHECK (array_length(participants, 1) = 2)
 		);
 
-		-- Create indexes for gift_transactions
-		CREATE INDEX IF NOT EXISTS idx_gift_transactions_sender_id ON gift_transactions(sender_id, created_at DESC);
-		CREATE INDEX IF NOT EXISTS idx_gift_transactions_recipient_id ON gift_transactions(recipient_id, created_at DESC);
-		CREATE INDEX IF NOT EXISTS idx_gift_transactions_created_at ON gift_transactions(created_at DESC);
-		CREATE INDEX IF NOT EXISTS idx_gift_transactions_gift_id ON gift_transactions(gift_id);
-		CREATE INDEX IF NOT EXISTS idx_gift_transactions_status ON gift_transactions(status);
-
-		-- 3. Create platform_commissions table
-		CREATE TABLE IF NOT EXISTS platform_commissions (
-			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-			
-			-- Link to gift transaction
-			gift_transaction_id UUID NOT NULL,
-			
-			-- Commission details
-			commission_amount INTEGER NOT NULL,
-			original_gift_price INTEGER NOT NULL,
-			commission_rate DECIMAL(5,2) DEFAULT 30.00,
-			
-			-- Transaction participants (for reporting)
+		-- 2. VIDEO REACTION MESSAGES TABLE
+		CREATE TABLE IF NOT EXISTS video_reaction_messages (
+			message_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			chat_id VARCHAR(255) NOT NULL,
 			sender_id VARCHAR(255) NOT NULL,
-			recipient_id VARCHAR(255) NOT NULL,
-			gift_name VARCHAR(100) NOT NULL,
 			
-			-- Metadata
-			metadata JSONB DEFAULT '{}',
+			content TEXT NOT NULL,
+			type VARCHAR(50) NOT NULL DEFAULT 'text',
+			status VARCHAR(50) NOT NULL DEFAULT 'sending',
 			
-			-- Timestamps
-			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			media_url TEXT,
+			media_metadata JSONB,
+			file_name TEXT,
 			
-			-- Foreign keys
-			CONSTRAINT platform_commissions_gift_transaction_fkey 
-				FOREIGN KEY (gift_transaction_id) REFERENCES gift_transactions(id) ON DELETE CASCADE,
-			CONSTRAINT platform_commissions_sender_fkey 
-				FOREIGN KEY (sender_id) REFERENCES users(uid) ON DELETE CASCADE,
-			CONSTRAINT platform_commissions_recipient_fkey 
-				FOREIGN KEY (recipient_id) REFERENCES users(uid) ON DELETE CASCADE,
+			reply_to_message_id UUID,
+			reply_to_content TEXT,
+			reply_to_sender VARCHAR(255),
 			
-			-- Checks
-			CHECK (commission_amount >= 0),
-			CHECK (original_gift_price > 0),
-			CHECK (commission_rate >= 0 AND commission_rate <= 100)
+			reactions JSONB DEFAULT '{}'::jsonb,
+			
+			is_edited BOOLEAN DEFAULT false,
+			edited_at TIMESTAMP WITH TIME ZONE,
+			is_pinned BOOLEAN DEFAULT false,
+			
+			read_by JSONB DEFAULT '{}'::jsonb,
+			delivered_to JSONB DEFAULT '{}'::jsonb,
+			
+			video_reaction_data JSONB,
+			is_original_reaction BOOLEAN DEFAULT false,
+			
+			timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			
+			CONSTRAINT fk_chat FOREIGN KEY (chat_id) REFERENCES video_reaction_chats(chat_id) ON DELETE CASCADE,
+			CONSTRAINT fk_sender FOREIGN KEY (sender_id) REFERENCES users(uid) ON DELETE CASCADE,
+			CONSTRAINT fk_reply_message FOREIGN KEY (reply_to_message_id) REFERENCES video_reaction_messages(message_id) ON DELETE SET NULL,
+			CONSTRAINT valid_message_type CHECK (type IN ('text', 'image', 'video', 'file', 'audio', 'location', 'contact')),
+			CONSTRAINT valid_status CHECK (status IN ('sending', 'sent', 'delivered', 'read', 'failed')),
+			CONSTRAINT check_content_not_empty CHECK (LENGTH(TRIM(content)) > 0),
+			CONSTRAINT check_content_length CHECK (LENGTH(content) <= 10000)
 		);
 
-		-- Create indexes for platform_commissions
-		CREATE INDEX IF NOT EXISTS idx_platform_commissions_gift_transaction_id ON platform_commissions(gift_transaction_id);
-		CREATE INDEX IF NOT EXISTS idx_platform_commissions_created_at ON platform_commissions(created_at DESC);
-		CREATE INDEX IF NOT EXISTS idx_platform_commissions_sender_id ON platform_commissions(sender_id);
-		CREATE INDEX IF NOT EXISTS idx_platform_commissions_recipient_id ON platform_commissions(recipient_id);
+		-- 3. WEBSOCKET CONNECTIONS TABLE
+		CREATE TABLE IF NOT EXISTS websocket_connections (
+			connection_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			user_id VARCHAR(255) NOT NULL,
+			socket_id VARCHAR(255) NOT NULL UNIQUE,
+			
+			connected_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			last_heartbeat TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			
+			device_type VARCHAR(50),
+			platform VARCHAR(50),
+			app_version VARCHAR(50),
+			
+			is_active BOOLEAN DEFAULT true,
+			
+			CONSTRAINT fk_user FOREIGN KEY (user_id) REFERENCES users(uid) ON DELETE CASCADE
+		);
 
-		-- 4. Update wallet_transactions to support gift types
-		DO $$
+		-- 4. TYPING INDICATORS TABLE
+		CREATE TABLE IF NOT EXISTS typing_indicators (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			chat_id VARCHAR(255) NOT NULL,
+			user_id VARCHAR(255) NOT NULL,
+			is_typing BOOLEAN DEFAULT true,
+			started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			expires_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP + INTERVAL '10 seconds',
+			
+			CONSTRAINT fk_chat_typing FOREIGN KEY (chat_id) REFERENCES video_reaction_chats(chat_id) ON DELETE CASCADE,
+			CONSTRAINT fk_user_typing FOREIGN KEY (user_id) REFERENCES users(uid) ON DELETE CASCADE,
+			CONSTRAINT unique_chat_user UNIQUE (chat_id, user_id)
+		);
+
+		-- 5. PINNED MESSAGES TABLE
+		CREATE TABLE IF NOT EXISTS pinned_video_reaction_messages (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			chat_id VARCHAR(255) NOT NULL,
+			message_id UUID NOT NULL,
+			pinned_by VARCHAR(255) NOT NULL,
+			pinned_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			
+			CONSTRAINT fk_chat_pinned FOREIGN KEY (chat_id) REFERENCES video_reaction_chats(chat_id) ON DELETE CASCADE,
+			CONSTRAINT fk_message_pinned FOREIGN KEY (message_id) REFERENCES video_reaction_messages(message_id) ON DELETE CASCADE,
+			CONSTRAINT fk_pinned_by FOREIGN KEY (pinned_by) REFERENCES users(uid) ON DELETE CASCADE,
+			CONSTRAINT unique_pinned_message UNIQUE (chat_id, message_id)
+		);
+
+		-- INDEXES
+		CREATE INDEX IF NOT EXISTS idx_video_reaction_chats_participants ON video_reaction_chats USING GIN(participants);
+		CREATE INDEX IF NOT EXISTS idx_video_reaction_chats_original_video ON video_reaction_chats(original_video_id);
+		CREATE INDEX IF NOT EXISTS idx_video_reaction_chats_last_message_time ON video_reaction_chats(last_message_time DESC);
+		CREATE INDEX IF NOT EXISTS idx_video_reaction_chats_created_at ON video_reaction_chats(created_at DESC);
+
+		CREATE INDEX IF NOT EXISTS idx_video_reaction_messages_chat ON video_reaction_messages(chat_id, timestamp DESC);
+		CREATE INDEX IF NOT EXISTS idx_video_reaction_messages_sender ON video_reaction_messages(sender_id);
+		CREATE INDEX IF NOT EXISTS idx_video_reaction_messages_timestamp ON video_reaction_messages(timestamp DESC);
+		CREATE INDEX IF NOT EXISTS idx_video_reaction_messages_status ON video_reaction_messages(status);
+		CREATE INDEX IF NOT EXISTS idx_video_reaction_messages_type ON video_reaction_messages(type);
+		CREATE INDEX IF NOT EXISTS idx_video_reaction_messages_reply ON video_reaction_messages(reply_to_message_id) WHERE reply_to_message_id IS NOT NULL;
+		CREATE INDEX IF NOT EXISTS idx_video_reaction_messages_pinned ON video_reaction_messages(chat_id, is_pinned) WHERE is_pinned = true;
+		CREATE INDEX IF NOT EXISTS idx_video_reaction_messages_original ON video_reaction_messages(chat_id, is_original_reaction) WHERE is_original_reaction = true;
+		CREATE INDEX IF NOT EXISTS idx_video_reaction_messages_content_search ON video_reaction_messages USING gin(to_tsvector('english', content));
+
+		CREATE INDEX IF NOT EXISTS idx_websocket_connections_user ON websocket_connections(user_id);
+		CREATE INDEX IF NOT EXISTS idx_websocket_connections_active ON websocket_connections(is_active) WHERE is_active = true;
+		CREATE INDEX IF NOT EXISTS idx_websocket_connections_heartbeat ON websocket_connections(last_heartbeat) WHERE is_active = true;
+
+		CREATE INDEX IF NOT EXISTS idx_typing_indicators_chat ON typing_indicators(chat_id);
+		CREATE INDEX IF NOT EXISTS idx_typing_indicators_expires ON typing_indicators(expires_at);
+
+		CREATE INDEX IF NOT EXISTS idx_pinned_messages_chat ON pinned_video_reaction_messages(chat_id);
+
+		-- TRIGGERS AND FUNCTIONS
+		CREATE OR REPLACE FUNCTION update_video_reaction_chat_last_message()
+		RETURNS TRIGGER AS $$
 		BEGIN
-			-- Add gift_id column if it doesn't exist
-			IF NOT EXISTS (
-				SELECT 1 FROM information_schema.columns 
-				WHERE table_name = 'wallet_transactions' AND column_name = 'gift_id'
-			) THEN
-				ALTER TABLE wallet_transactions ADD COLUMN gift_id VARCHAR(100);
-			END IF;
-
-			-- Add recipient_id column if it doesn't exist
-			IF NOT EXISTS (
-				SELECT 1 FROM information_schema.columns 
-				WHERE table_name = 'wallet_transactions' AND column_name = 'recipient_id'
-			) THEN
-				ALTER TABLE wallet_transactions ADD COLUMN recipient_id VARCHAR(255);
-			END IF;
-
-			-- Add sender_id column if it doesn't exist
-			IF NOT EXISTS (
-				SELECT 1 FROM information_schema.columns 
-				WHERE table_name = 'wallet_transactions' AND column_name = 'sender_id'
-			) THEN
-				ALTER TABLE wallet_transactions ADD COLUMN sender_id VARCHAR(255);
-			END IF;
-		END $$;
-
-		-- Create indexes for new wallet_transactions columns
-		CREATE INDEX IF NOT EXISTS idx_wallet_transactions_gift_id ON wallet_transactions(gift_id) WHERE gift_id IS NOT NULL;
-		CREATE INDEX IF NOT EXISTS idx_wallet_transactions_recipient_id ON wallet_transactions(recipient_id) WHERE recipient_id IS NOT NULL;
-		CREATE INDEX IF NOT EXISTS idx_wallet_transactions_sender_id ON wallet_transactions(sender_id) WHERE sender_id IS NOT NULL;
-
-		-- 5. Create function to calculate platform commission
-		CREATE OR REPLACE FUNCTION calculate_platform_commission(
-			gift_price INTEGER,
-			commission_rate DECIMAL DEFAULT 30.00
-		)
-		RETURNS INTEGER AS $$
-		BEGIN
-			RETURN FLOOR((gift_price * commission_rate) / 100.0);
+			UPDATE video_reaction_chats
+			SET 
+				last_message = NEW.content,
+				last_message_type = NEW.type,
+				last_message_sender = NEW.sender_id,
+				last_message_time = NEW.timestamp,
+				updated_at = CURRENT_TIMESTAMP
+			WHERE chat_id = NEW.chat_id;
+			RETURN NEW;
 		END;
-		$$ LANGUAGE plpgsql IMMUTABLE;
+		$$ LANGUAGE plpgsql;
 
-		-- 6. Create function to calculate recipient amount
-		CREATE OR REPLACE FUNCTION calculate_recipient_amount(
-			gift_price INTEGER,
-			commission_rate DECIMAL DEFAULT 30.00
-		)
-		RETURNS INTEGER AS $$
+		DROP TRIGGER IF EXISTS trigger_update_video_reaction_chat_last_message ON video_reaction_messages;
+		CREATE TRIGGER trigger_update_video_reaction_chat_last_message
+			AFTER INSERT ON video_reaction_messages
+			FOR EACH ROW
+			EXECUTE FUNCTION update_video_reaction_chat_last_message();
+
+		CREATE OR REPLACE FUNCTION increment_unread_count()
+		RETURNS TRIGGER AS $$
+		DECLARE
+			participant_id VARCHAR(255);
 		BEGIN
-			RETURN gift_price - calculate_platform_commission(gift_price, commission_rate);
+			FOR participant_id IN 
+				SELECT unnest(participants) 
+				FROM video_reaction_chats 
+				WHERE chat_id = NEW.chat_id
+			LOOP
+				IF participant_id != NEW.sender_id THEN
+					UPDATE video_reaction_chats
+					SET unread_counts = jsonb_set(
+						COALESCE(unread_counts, '{}'::jsonb),
+						ARRAY[participant_id],
+						to_jsonb(COALESCE((unread_counts->participant_id)::int, 0) + 1)
+					)
+					WHERE chat_id = NEW.chat_id;
+				END IF;
+			END LOOP;
+			RETURN NEW;
 		END;
-		$$ LANGUAGE plpgsql IMMUTABLE;
+		$$ LANGUAGE plpgsql;
 
-		-- 7. Create function to get total platform revenue
-		CREATE OR REPLACE FUNCTION get_total_platform_revenue()
-		RETURNS TABLE(
-			total_commissions BIGINT,
-			total_gifts_facilitated BIGINT,
-			average_commission DECIMAL,
-			commission_rate DECIMAL
+		DROP TRIGGER IF EXISTS trigger_increment_unread_count ON video_reaction_messages;
+		CREATE TRIGGER trigger_increment_unread_count
+			AFTER INSERT ON video_reaction_messages
+			FOR EACH ROW
+			EXECUTE FUNCTION increment_unread_count();
+
+		-- HELPER FUNCTIONS
+		CREATE OR REPLACE FUNCTION generate_video_reaction_chat_id(
+			p_user1_id VARCHAR,
+			p_user2_id VARCHAR,
+			p_video_id UUID
+		)
+		RETURNS VARCHAR AS $$
+		DECLARE
+			sorted_ids TEXT[];
+		BEGIN
+			sorted_ids := ARRAY[p_user1_id, p_user2_id];
+			sorted_ids := ARRAY(SELECT unnest(sorted_ids) ORDER BY 1);
+			RETURN 'video_reaction_' || p_video_id || '_' || sorted_ids[1] || '_' || sorted_ids[2];
+		END;
+		$$ LANGUAGE plpgsql;
+
+		CREATE OR REPLACE FUNCTION mark_video_reaction_chat_as_read(p_chat_id VARCHAR, p_user_id VARCHAR)
+		RETURNS void AS $$
+		BEGIN
+			UPDATE video_reaction_chats
+			SET unread_counts = jsonb_set(
+				COALESCE(unread_counts, '{}'::jsonb),
+				ARRAY[p_user_id],
+				'0'::jsonb
+			),
+			updated_at = CURRENT_TIMESTAMP
+			WHERE chat_id = p_chat_id;
+		END;
+		$$ LANGUAGE plpgsql;
+
+		CREATE OR REPLACE FUNCTION search_video_reaction_messages(
+			p_chat_id VARCHAR,
+			p_query TEXT,
+			p_limit INT DEFAULT 50
+		)
+		RETURNS TABLE (
+			message_id UUID,
+			chat_id VARCHAR,
+			sender_id VARCHAR,
+			content TEXT,
+			type VARCHAR,
+			msg_timestamp TIMESTAMP WITH TIME ZONE,
+			relevance FLOAT
 		) AS $$
 		BEGIN
 			RETURN QUERY
 			SELECT 
-				COALESCE(SUM(commission_amount), 0) as total_commissions,
-				COUNT(*) as total_gifts_facilitated,
-				COALESCE(AVG(commission_amount), 0) as average_commission,
-				AVG(commission_rate) as commission_rate
-			FROM platform_commissions;
+				vrm.message_id,
+				vrm.chat_id,
+				vrm.sender_id,
+				vrm.content,
+				vrm.type,
+				vrm.timestamp as msg_timestamp,
+				ts_rank(to_tsvector('english', vrm.content), plainto_tsquery('english', p_query)) as relevance
+			FROM video_reaction_messages vrm
+			WHERE vrm.chat_id = p_chat_id
+			  AND to_tsvector('english', vrm.content) @@ plainto_tsquery('english', p_query)
+			ORDER BY relevance DESC, vrm.timestamp DESC
+			LIMIT p_limit;
 		END;
 		$$ LANGUAGE plpgsql;
 
-		-- 8. Create function to get user gift statistics
-		CREATE OR REPLACE FUNCTION get_user_gift_stats(user_uid VARCHAR(255))
-		RETURNS TABLE(
-			gifts_sent BIGINT,
-			gifts_received BIGINT,
-			total_spent INTEGER,
-			total_earned INTEGER,
-			favorite_gift_to_send VARCHAR(100),
-			favorite_gift_received VARCHAR(100)
-		) AS $$
+		CREATE OR REPLACE FUNCTION cleanup_expired_typing_indicators()
+		RETURNS void AS $$
 		BEGIN
-			RETURN QUERY
-			SELECT 
-				COUNT(*) FILTER (WHERE gt.sender_id = user_uid) as gifts_sent,
-				COUNT(*) FILTER (WHERE gt.recipient_id = user_uid) as gifts_received,
-				COALESCE(SUM(gt.sender_paid) FILTER (WHERE gt.sender_id = user_uid), 0)::INTEGER as total_spent,
-				COALESCE(SUM(gt.recipient_received) FILTER (WHERE gt.recipient_id = user_uid), 0)::INTEGER as total_earned,
-				(
-					SELECT gift_name 
-					FROM gift_transactions 
-					WHERE sender_id = user_uid 
-					GROUP BY gift_name 
-					ORDER BY COUNT(*) DESC 
-					LIMIT 1
-				) as favorite_gift_to_send,
-				(
-					SELECT gift_name 
-					FROM gift_transactions 
-					WHERE recipient_id = user_uid 
-					GROUP BY gift_name 
-					ORDER BY COUNT(*) DESC 
-					LIMIT 1
-				) as favorite_gift_received
-			FROM gift_transactions gt;
+			DELETE FROM typing_indicators WHERE expires_at < CURRENT_TIMESTAMP;
 		END;
 		$$ LANGUAGE plpgsql;
 
-		-- 9. Create materialized view for top gift givers (leaderboard)
-		CREATE MATERIALIZED VIEW IF NOT EXISTS top_gift_givers AS
-		SELECT 
-			sender_id,
-			sender_name,
-			COUNT(*) as gifts_sent,
-			SUM(sender_paid) as total_spent,
-			AVG(sender_paid) as avg_gift_value,
-			MAX(created_at) as last_gift_sent
-		FROM gift_transactions
-		WHERE created_at >= NOW() - INTERVAL '30 days'
-		GROUP BY sender_id, sender_name
-		ORDER BY total_spent DESC
-		LIMIT 100;
-
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_top_gift_givers_sender_id ON top_gift_givers(sender_id);
-
-		-- 10. Create materialized view for top gift receivers (leaderboard)
-		CREATE MATERIALIZED VIEW IF NOT EXISTS top_gift_receivers AS
-		SELECT 
-			recipient_id,
-			recipient_name,
-			COUNT(*) as gifts_received,
-			SUM(recipient_received) as total_earned,
-			AVG(recipient_received) as avg_gift_value,
-			MAX(created_at) as last_gift_received
-		FROM gift_transactions
-		WHERE created_at >= NOW() - INTERVAL '30 days'
-		GROUP BY recipient_id, recipient_name
-		ORDER BY total_earned DESC
-		LIMIT 100;
-
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_top_gift_receivers_recipient_id ON top_gift_receivers(recipient_id);
-
-		-- 11. Create function to refresh gift leaderboards
-		CREATE OR REPLACE FUNCTION refresh_gift_leaderboards()
-		RETURNS VOID AS $$
+		CREATE OR REPLACE FUNCTION cleanup_stale_websocket_connections()
+		RETURNS void AS $$
 		BEGIN
-			REFRESH MATERIALIZED VIEW CONCURRENTLY top_gift_givers;
-			REFRESH MATERIALIZED VIEW CONCURRENTLY top_gift_receivers;
+			UPDATE websocket_connections
+			SET is_active = false
+			WHERE is_active = true 
+			  AND last_heartbeat < CURRENT_TIMESTAMP - INTERVAL '5 minutes';
 		END;
 		$$ LANGUAGE plpgsql;
 
-		-- 12. Add comments for documentation
-		COMMENT ON TABLE gift_transactions IS 'Records all virtual gift transactions between users';
-		COMMENT ON TABLE platform_commissions IS 'Tracks platform revenue from gift commissions (30% of each gift)';
-		COMMENT ON COLUMN users.gifts_sent_count IS 'Total number of gifts sent by user';
-		COMMENT ON COLUMN users.gifts_received_count IS 'Total number of gifts received by user';
-		COMMENT ON COLUMN users.total_coins_spent_on_gifts IS 'Total coins spent sending gifts';
-		COMMENT ON COLUMN users.total_coins_earned_from_gifts IS 'Total coins earned from received gifts (after 30% commission)';
-		COMMENT ON FUNCTION calculate_platform_commission IS 'Calculates platform commission (default 30%) from gift price';
-		COMMENT ON FUNCTION calculate_recipient_amount IS 'Calculates amount recipient receives (gift price - 30% commission)';
+		CREATE OR REPLACE FUNCTION update_websocket_heartbeat(p_socket_id VARCHAR)
+		RETURNS void AS $$
+		BEGIN
+			UPDATE websocket_connections
+			SET last_heartbeat = CURRENT_TIMESTAMP
+			WHERE socket_id = p_socket_id AND is_active = true;
+		END;
+		$$ LANGUAGE plpgsql;
 
-		-- 13. Initialize gift counts for existing users
-		UPDATE users 
-		SET 
-			gifts_sent_count = 0,
-			gifts_received_count = 0,
-			total_coins_spent_on_gifts = 0,
-			total_coins_earned_from_gifts = 0
-		WHERE 
-			gifts_sent_count IS NULL OR 
-			gifts_received_count IS NULL OR
-			total_coins_spent_on_gifts IS NULL OR
-			total_coins_earned_from_gifts IS NULL;
+		-- MONITORING VIEWS
+		CREATE OR REPLACE VIEW active_video_reaction_chats_summary AS
+		SELECT 
+			COUNT(*) as total_chats,
+			COUNT(*) FILTER (WHERE last_message_time > CURRENT_TIMESTAMP - INTERVAL '24 hours') as active_today,
+			COUNT(*) FILTER (WHERE last_message_time > CURRENT_TIMESTAMP - INTERVAL '7 days') as active_week
+		FROM video_reaction_chats;
+
+		CREATE OR REPLACE VIEW video_reaction_messages_stats AS
+		SELECT 
+			COUNT(*) as total_messages,
+			COUNT(DISTINCT chat_id) as unique_chats,
+			COUNT(*) FILTER (WHERE type = 'text') as text_messages,
+			COUNT(*) FILTER (WHERE type = 'image') as image_messages,
+			COUNT(*) FILTER (WHERE "timestamp" > CURRENT_TIMESTAMP - INTERVAL '24 hours') as messages_today
+		FROM video_reaction_messages;
+
+		-- TABLE COMMENTS
+		COMMENT ON TABLE video_reaction_chats IS 'Stores video reaction-based chat conversations between two users';
+		COMMENT ON TABLE video_reaction_messages IS 'Stores individual messages in video reaction chats';
+		COMMENT ON TABLE websocket_connections IS 'Tracks active WebSocket connections for real-time features';
+		COMMENT ON TABLE typing_indicators IS 'Ephemeral storage for typing status indicators';
+		COMMENT ON TABLE pinned_video_reaction_messages IS 'Stores pinned messages in chats (max 10 per chat)';
 	`,
 		},
 		{
@@ -1485,28 +1459,22 @@ func RunMigrations(db *sqlx.DB) error {
 	}
 
 	log.Println("✅ Video social media migrations completed successfully")
-	log.Println("🔑 Features added:")
+	log.Println("🔓 Features added:")
 	log.Println("   • User roles: admin, host, guest")
 	log.Println("   • WhatsApp number field (Kenyan format: 254XXXXXXXXX)")
-	log.Println("   • Role-based video posting permissions (admin/host only)")
+	log.Println("   • ✅ ALL AUTHENTICATED USERS CAN POST (role restriction removed)")
 	log.Println("   • 🆕 Video price field for business posts")
 	log.Println("   • 🆕 Video verification field for content verification")
-	log.Println("   • 🔍 Advanced search optimization with multiple modes:")
-	log.Println("      - Full-text search with ranking")
-	log.Println("      - Fuzzy search with typo handling")
-	log.Println("      - Exact phrase matching")
-	log.Println("      - Combined search strategies")
+	log.Println("   • 🔍 Advanced search optimization with multiple modes")
 	log.Println("   • 🚀 Search performance indexes (10-100x faster)")
 	log.Println("   • 💡 Real-time search suggestions")
 	log.Println("   • 📊 Popular search terms tracking")
 	log.Println("   • 🎯 Advanced search filters (media type, price, verification)")
-	log.Println("   • 🎁 Virtual Gift System:")
-	log.Println("      - Gift transactions tracking")
-	log.Println("      - Platform commission system (30%)")
-	log.Println("      - User gift statistics (sent/received/spent/earned)")
-	log.Println("      - Gift leaderboards (top givers & receivers)")
-	log.Println("      - Wallet integration for gift payments")
-	log.Println("   • Database triggers for role validation")
+	log.Println("   • 💬 VIDEO REACTIONS CHAT SYSTEM (WebSocket-powered)")
+	log.Println("   • 🔌 WebSocket connections tracking")
+	log.Println("   • 📨 Real-time messaging with read receipts")
+	log.Println("   • ⌨️  Typing indicators")
+	log.Println("   • 📌 Message pinning (up to 10 per chat)")
 	return nil
 }
 
@@ -1524,7 +1492,7 @@ func applyMigration(db *sqlx.DB, migration Migration) error {
 	}
 
 	if count > 0 {
-		log.Printf("⏭️  Migration %s already applied, skipping", migration.Version)
+		log.Printf("⭐️ Migration %s already applied, skipping", migration.Version)
 		return nil
 	}
 
